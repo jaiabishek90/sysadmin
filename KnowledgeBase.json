@@ -1,0 +1,2381 @@
+{
+ "version": "3.0",
+ "updated": "2026-08-04",
+ "notes": "Match = (eventIds contains Id OR eventIds empty) AND (any providers entry matches ProviderName via -like \"*entry*\", case-insensitive). First match wins - keep specific rules above generic ones. Rules with an empty eventIds list match EVERY id from their providers and must therefore stay at the end of the list.",
+ "rules": [
+  {
+   "id": "W365-RDPCORE",
+   "providers": [
+    "RdpCoreCDV",
+    "RdpCoreTS"
+   ],
+   "eventIds": [
+    226,
+    227,
+    148,
+    149,
+    162
+   ],
+   "title": "Cloud PC / RDP transport dropped the session (RdpCore)",
+   "severity": "Warning",
+   "cause": "The RDP transport layer tore down or failed to establish a connection. On Windows 365 and AVD this is usually network rather than host: UDP 3390 blocked forcing a TCP fallback, an inspecting proxy breaking the gateway TLS session, MTU or VPN fragmentation, or simple packet loss on the last mile.",
+   "impact": "Users see freezes, grey screens and \"reconnecting\" banners. Repeated 226 events across many devices on one site almost always means a network path problem, not a Cloud PC problem.",
+   "steps": [
+    "Establish scope first - one user, one site, or the whole tenant. Site-wide points at egress; single-user points at the local link.",
+    "Confirm the RDP Shortpath UDP path: UDP 3390 outbound must reach the gateway, otherwise every session silently falls back to TCP and gets fragile.",
+    "Check whether a TLS-inspecting proxy sits in the path. Gateway traffic must be excluded from inspection - re-signed certificates break the connection sequence.",
+    "Correlate the timestamps against WLAN-AutoConfig and RasClient events on the same device to separate WiFi roaming and VPN drops from gateway faults.",
+    "Test the required endpoints on 443 with a Port Check card rather than ping - the service endpoints drop ICMP by design.",
+    "If it only happens over VPN, test with split tunnelling so the RDP traffic bypasses the tunnel."
+   ],
+   "commands": [
+    "Get-WinEvent -LogName 'Microsoft-Windows-RemoteDesktopServices-RdpCoreCDV/Operational' -MaxEvents 40 | Format-Table TimeCreated,Id,LevelDisplayName -AutoSize",
+    "Test-NetConnection -ComputerName rdweb.wvd.microsoft.com -Port 443",
+    "Get-NetAdapter | Select-Object Name,Status,LinkSpeed,MtuSize"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20365%20troubleshoot%20connection%20RDP%20Shortpath"
+  },
+  {
+   "id": "NET-TCPIP-DUPIP",
+   "providers": [
+    "Tcpip",
+    "Tcpip6"
+   ],
+   "eventIds": [
+    4198,
+    4199
+   ],
+   "title": "Duplicate IP address detected on the network",
+   "severity": "Error",
+   "cause": "Another host answered an ARP probe for an address this machine holds. Typical roots: a static address issued inside the DHCP scope, two scopes overlapping across sites, a stale reservation, or a cloned VM keeping its address.",
+   "impact": "Traffic for the address is split between two hosts - the symptom is intermittent, bidirectional connectivity loss that looks like a flaky NIC.",
+   "steps": [
+    "Read the MAC address of the offending host from the event message.",
+    "Look that MAC up in the switch ARP or MAC address table to find the physical port and identify the device.",
+    "Confirm whether this machine has a static address that overlaps the DHCP scope, or whether the scope overlaps another site.",
+    "If the address came from DHCP, check the server for a conflicting reservation and enable conflict detection.",
+    "Release and renew after the conflict is removed, then confirm the address is unique."
+   ],
+   "commands": [
+    "Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias,IPAddress,PrefixOrigin,SuffixOrigin",
+    "arp -a",
+    "ipconfig /release; ipconfig /renew"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20duplicate%20IP%20address%20detected%204198%204199"
+  },
+  {
+   "id": "SYS-KERNELPOWER-41",
+   "providers": [
+    "Kernel-Power"
+   ],
+   "eventIds": [
+    41
+   ],
+   "title": "System rebooted without a clean shutdown (Kernel-Power 41)",
+   "severity": "Critical",
+   "cause": "Windows lost power or stopped responding without logging a shutdown. Typical roots: power delivery, overheating, faulty RAM, a storage controller stall, a bugcheck that could not be written, or firmware power-management defects.",
+   "impact": "Unsaved data is lost, filesystem and registry hives risk corruption, and repeats usually precede hardware failure.",
+   "steps": [
+    "Check the BugcheckCode field in the event Details tab. Non-zero means a real bugcheck occurred - analyse the dump. Zero means power was cut or the machine hard-hung.",
+    "Look for C:\\Windows\\Minidump\\*.dmp with a matching timestamp and open it in WinDbg with !analyze -v.",
+    "Correlate with WHEA-Logger events (17/18/19/47) which indicate corrected or uncorrected hardware errors.",
+    "Update BIOS/UEFI, chipset, storage and graphics drivers - power-state bugs are overwhelmingly firmware and driver related.",
+    "Run memory and storage diagnostics: mdsched.exe for RAM, vendor tooling plus chkdsk for the disk.",
+    "On VMs check host power events; on laptops test a known-good battery and charger.",
+    "If it only happens at sleep or resume, disable Fast Startup and hybrid sleep as a test."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='System';Id=41} -MaxEvents 5 | Format-List TimeCreated,Message",
+    "Get-ChildItem C:\\Windows\\Minidump | Sort-Object LastWriteTime -Descending | Select-Object -First 5",
+    "powercfg /a",
+    "powercfg /h off"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/event-id-41-restart"
+  },
+  {
+   "id": "SYS-BUGCHECK-1001",
+   "providers": [
+    "BugCheck"
+   ],
+   "eventIds": [
+    1001
+   ],
+   "title": "Bugcheck (blue screen) recorded",
+   "severity": "Critical",
+   "cause": "The kernel hit an unrecoverable condition. The stop code identifies the fault class; the dump identifies the faulting module.",
+   "impact": "Full system outage and potential data loss each time it fires. Fleet-wide repeats normally trace to one driver or agent version.",
+   "steps": [
+    "Record the exact stop code and its four parameters from the message.",
+    "Open the dump in WinDbg and run !analyze -v; note MODULE_NAME and IMAGE_NAME.",
+    "Search the fleet for the same module to confirm single-device versus driver-version issue.",
+    "Update or roll back that driver. Storage filter drivers, VPN clients and EDR/AV filter drivers are the most common culprits.",
+    "Use Driver Verifier against non-Microsoft drivers only if the dump is inconclusive, and always schedule it - it can make a device unbootable.",
+    "Confirm the page file is large enough on the system drive or dumps never get written."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='System';Id=1001} -MaxEvents 5 | Format-List TimeCreated,Message",
+    "wmic recoveros get DebugInfoType,DebugFilePath",
+    "verifier /standard /driver <driver.sys>",
+    "verifier /reset"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/bug-check-code-reference2"
+  },
+  {
+   "id": "SYS-EVENTLOG-6008",
+   "providers": [
+    "EventLog"
+   ],
+   "eventIds": [
+    6008
+   ],
+   "title": "Previous system shutdown was unexpected",
+   "severity": "Error",
+   "cause": "The Event Log service detected the last shutdown did not follow the normal sequence - the twin of Kernel-Power 41.",
+   "impact": "Indicates an unplanned outage; use it to build an unexpected-restart timeline.",
+   "steps": [
+    "Match the timestamp against Kernel-Power 41 and BugCheck 1001 to classify power loss versus crash.",
+    "Check whether a task, patching window or power policy forced the restart.",
+    "For VMs, correlate with hypervisor host events and backup or snapshot jobs."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='System';Id=@(41,1074,6005,6006,6008)} -MaxEvents 40 | Format-Table TimeCreated,Id,ProviderName -AutoSize"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/event-id-41-restart"
+  },
+  {
+   "id": "SYS-SHUTDOWN-1074",
+   "providers": [
+    "User32",
+    "Kernel-General"
+   ],
+   "eventIds": [
+    1074
+   ],
+   "title": "Planned shutdown or restart initiated",
+   "severity": "Information",
+   "cause": "A user, process or update initiated a restart. The message names the process and reason code.",
+   "impact": "None on its own - valuable for proving a restart was intentional.",
+   "steps": [
+    "Read the Process and Reason fields to identify what triggered the restart.",
+    "If the process is TiWorker or wuauclt the restart came from servicing - check your update ring deadline settings."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='System';Id=1074} -MaxEvents 20 | Format-List TimeCreated,Message"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/client-management/"
+  },
+  {
+   "id": "SYS-SCM-7000",
+   "providers": [
+    "Service Control Manager"
+   ],
+   "eventIds": [
+    7000,
+    7001
+   ],
+   "title": "A service failed to start",
+   "severity": "Error",
+   "cause": "The service binary is missing or corrupt, a dependency did not start, the logon account or password is wrong, or a permission on the binary path is broken.",
+   "impact": "The dependent feature silently stops working - a very common cause of 'it worked yesterday' tickets.",
+   "steps": [
+    "Note the service name and the error text at the end of the message.",
+    "Verify the ImagePath binary exists and is signed under HKLM\\SYSTEM\\CurrentControlSet\\Services\\<name>.",
+    "Check the service logon account and whether a password change or gMSA rotation broke it.",
+    "Start the service manually and capture the exact error, then check its dependencies.",
+    "For Microsoft services run SFC and DISM; for third-party agents repair or reinstall the product."
+   ],
+   "commands": [
+    "Get-Service <name> | Format-List *",
+    "sc.exe qc <name>",
+    "sc.exe qfailure <name>",
+    "Get-CimInstance Win32_Service -Filter \"Name='<name>'\" | Select-Object Name,StartName,PathName,State"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/services-troubleshooting"
+  },
+  {
+   "id": "SYS-SCM-7009",
+   "providers": [
+    "Service Control Manager"
+   ],
+   "eventIds": [
+    7009,
+    7011
+   ],
+   "title": "Service start or control request timed out",
+   "severity": "Error",
+   "cause": "The service did not answer the SCM inside the timeout (30 s start, 20 s control). Usually slow disks, boot contention, blocking network calls at startup, or AV scanning the binary.",
+   "impact": "Slow boot and unreliable service availability, especially on shared or VDI hosts.",
+   "steps": [
+    "Identify which service times out and whether it always happens at boot.",
+    "Check disk latency and CPU pressure during boot using the Diagnostics-Performance log (events 100-103).",
+    "Add an AV/EDR exclusion for the service binary if scanning delays start.",
+    "As mitigation only, raise ServicesPipeTimeout under HKLM\\SYSTEM\\CurrentControlSet\\Control - still fix the root cause.",
+    "For services needing the network, set delayed automatic start."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational';Id=@(100,101,102,103)} -MaxEvents 20 | Format-Table TimeCreated,Id,Message -Wrap",
+    "sc.exe config <name> start= delayed-auto"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/services-troubleshooting"
+  },
+  {
+   "id": "SYS-SCM-7023",
+   "providers": [
+    "Service Control Manager"
+   ],
+   "eventIds": [
+    7023,
+    7024,
+    7031,
+    7034
+   ],
+   "title": "Service terminated unexpectedly or with an error",
+   "severity": "Error",
+   "cause": "The service stopped and returned a service-specific or Win32 error code, or its process crashed. The message includes the crash count and recovery action.",
+   "impact": "Feature outage; flapping services burn CPU, spam the log and destabilise dependent components.",
+   "steps": [
+    "Decode the error code from the message text.",
+    "Look in the Application log for a matching Application Error (1000) naming the faulting module.",
+    "Update or reinstall the owning product and check vendor notes for known crash fixes.",
+    "Enable a user-mode dump via HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps and send it to the vendor.",
+    "Review recovery actions with sc.exe qfailure - a bad restart policy hides the real frequency."
+   ],
+   "commands": [
+    "[ComponentModel.Win32Exception]::new(<code>).Message",
+    "net helpmsg <decimal code>",
+    "sc.exe qfailure <name>"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes"
+  },
+  {
+   "id": "SYS-DISK",
+   "providers": [
+    "disk",
+    "Disk",
+    "storahci",
+    "stornvme",
+    "vhdmp"
+   ],
+   "eventIds": [
+    7,
+    11,
+    51,
+    129,
+    153,
+    154
+   ],
+   "title": "Storage subsystem error (bad block, controller reset or I/O retry)",
+   "severity": "Critical",
+   "cause": "The disk reported a bad block, the controller reset the device (129), or an I/O was retried or failed. Roots: failing SSD/HDD, faulty cable or backplane, outdated firmware, or an overloaded SAN/virtual disk.",
+   "impact": "Data corruption and sudden freezes. Treat repeated 129/153 as pre-failure warning and back up immediately.",
+   "steps": [
+    "Identify the affected physical disk from the message (\\Device\\Harddisk#\\DR#).",
+    "Pull SMART and reliability counters and check health status.",
+    "Update the storage controller driver and the disk firmware from the OEM.",
+    "Run chkdsk /scan online; schedule chkdsk /f /r only in a maintenance window.",
+    "For VMs check datastore latency and storage path redundancy.",
+    "Replace the disk if wear indicators are high or reallocated sectors are growing."
+   ],
+   "commands": [
+    "Get-PhysicalDisk | Select-Object DeviceId,FriendlyName,MediaType,HealthStatus,OperationalStatus",
+    "Get-PhysicalDisk | Get-StorageReliabilityCounter | Select-Object DeviceId,Wear,ReadErrorsTotal,WriteErrorsTotal,Temperature",
+    "Repair-Volume -DriveLetter C -Scan",
+    "chkdsk C: /scan /perf"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-server/storage/"
+  },
+  {
+   "id": "SYS-NTFS",
+   "providers": [
+    "Ntfs"
+   ],
+   "eventIds": [
+    55,
+    98,
+    130,
+    137,
+    140
+   ],
+   "title": "NTFS file-system corruption detected",
+   "severity": "Critical",
+   "cause": "The NTFS driver found structural corruption, usually after an unclean shutdown, a storage fault or a misbehaving filter driver.",
+   "impact": "Files or the whole volume can become inaccessible; left alone it usually worsens.",
+   "steps": [
+    "Back up user data from the affected volume first.",
+    "Run an online scan, then spot-fix or offline repair in a maintenance window.",
+    "Investigate the storage hardware - NTFS corruption is a symptom, not the cause.",
+    "Check third-party filter drivers with fltmc and remove obsolete ones."
+   ],
+   "commands": [
+    "Repair-Volume -DriveLetter C -Scan",
+    "Repair-Volume -DriveLetter C -SpotFix",
+    "fltmc filters",
+    "chkdsk C: /f /r"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/chkdsk"
+  },
+  {
+   "id": "SYS-WHEA",
+   "providers": [
+    "WHEA-Logger"
+   ],
+   "eventIds": [
+    17,
+    18,
+    19,
+    46,
+    47
+   ],
+   "title": "Hardware error reported by WHEA",
+   "severity": "Critical",
+   "cause": "Windows Hardware Error Architecture logged a machine-check, PCIe or memory error. Corrected errors (17/47) are warnings; uncorrected (18) cause bugchecks.",
+   "impact": "Predicts imminent hardware failure - CPU, RAM, PCIe device or motherboard.",
+   "steps": [
+    "Read the component and error type in the Details tab (Processor, Memory, PCI Express).",
+    "Update BIOS/UEFI and device firmware first - many corrected-error storms are firmware bugs.",
+    "For memory errors run vendor diagnostics and reseat or replace the DIMM at the reported physical address.",
+    "For PCIe errors reseat the card, try another slot and check the riser or backplane.",
+    "Open an OEM hardware case and attach the event XML."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-WHEA-Logger'} -MaxEvents 20 | Format-List TimeCreated,Id,Message",
+    "mdsched.exe"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-hardware/drivers/whea/"
+  },
+  {
+   "id": "SYS-KERNELPNP",
+   "providers": [
+    "Kernel-PnP"
+   ],
+   "eventIds": [
+    219,
+    225,
+    411
+   ],
+   "title": "A driver failed to load for a device",
+   "severity": "Warning",
+   "cause": "A driver package was blocked, unsigned, incompatible with the OS build, or its device was removed while in use.",
+   "impact": "The device stops working or falls back to a generic driver with reduced functionality.",
+   "steps": [
+    "Find the failing device by instance ID in the message and inspect it in Device Manager.",
+    "Check for a Device Manager error code.",
+    "Install the OEM driver package for the exact OS build; remove duplicate packages with pnputil.",
+    "If Memory Integrity (HVCI) is on, confirm the driver is HVCI-compatible - incompatible drivers are silently blocked.",
+    "Review Intune device-installation-restriction policies that could block the hardware ID."
+   ],
+   "commands": [
+    "Get-CimInstance Win32_PnPEntity | Where-Object ConfigManagerErrorCode -ne 0 | Select-Object Name,PNPClass,ConfigManagerErrorCode",
+    "pnputil /enum-drivers",
+    "pnputil /delete-driver oemXX.inf /uninstall"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-hardware/drivers/install/"
+  },
+  {
+   "id": "SYS-DCOM-10016",
+   "providers": [
+    "DistributedCOM"
+   ],
+   "eventIds": [
+    10016
+   ],
+   "title": "DCOM permission denied for a CLSID/APPID",
+   "severity": "Warning",
+   "cause": "A process tried to activate a COM server without local activation rights. In the vast majority of cases this is benign by design on Windows 10/11 and Microsoft's guidance is to ignore it.",
+   "impact": "Usually none. Only act if a specific feature is visibly broken and timestamps line up.",
+   "steps": [
+    "Confirm a real symptom exists before changing anything - do not blanket-fix DCOM permissions.",
+    "If a genuine failure correlates, resolve the CLSID/APPID in the registry to identify the component.",
+    "Grant Local Activation to the named account through Component Services for that specific APPID only, and document it.",
+    "Never take ownership of Microsoft-owned APPIDs fleet-wide - it creates a supportability and security problem."
+   ],
+   "commands": [
+    "Get-ChildItem 'HKLM:\\SOFTWARE\\Classes\\AppID\\{APPID}' | Format-List *"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/win32/com/the-com-security-model"
+  },
+  {
+   "id": "SYS-DNSCLIENT-1014",
+   "providers": [
+    "DNS Client Events",
+    "DNS-Client"
+   ],
+   "eventIds": [
+    1014
+   ],
+   "title": "DNS name resolution timed out",
+   "severity": "Warning",
+   "cause": "Configured DNS servers did not answer in time. Common on VPN transitions, Wi-Fi roaming, split-brain DNS, or when a device points at unreachable internal DNS off-network.",
+   "impact": "Sign-in delays, Group Policy failures, Intune check-in failures and broken internal apps.",
+   "steps": [
+    "Check the DNS servers on the active adapter and whether they are reachable (Network tab, DNS card).",
+    "Test an internal and an external name and compare response times with the Lookup cards.",
+    "For VPN or always-on scenarios verify the DNS suffix search list and NRPT rules.",
+    "Flush the resolver cache and retest; if it only happens on wake, check adapter power management.",
+    "Confirm the device is not still pointing at a decommissioned domain controller."
+   ],
+   "commands": [
+    "Get-DnsClientServerAddress -AddressFamily IPv4",
+    "Resolve-DnsName <internal.fqdn> -Server <dns-ip>",
+    "ipconfig /flushdns",
+    "Get-DnsClientNrptPolicy"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/dns-client-resolution-timeouts"
+  },
+  {
+   "id": "SYS-NETLOGON-5719",
+   "providers": [
+    "NETLOGON"
+   ],
+   "eventIds": [
+    5719,
+    5783,
+    5807
+   ],
+   "title": "No domain controller available or secure channel problem",
+   "severity": "Error",
+   "cause": "Netlogon could not reach a DC. At boot this is often the network stack not being ready; persistently it means DNS, routing, VPN or a broken machine-account secure channel.",
+   "impact": "Group Policy does not apply, drive mappings fail, Kerberos-dependent apps break.",
+   "steps": [
+    "Determine whether it only occurs at startup (usually benign timing) or throughout the day (real fault).",
+    "Test the secure channel and repair it if broken.",
+    "Validate DNS points to internal DNS and the _ldap._tcp.dc._msdcs SRV records resolve.",
+    "Check site and subnet mapping in AD Sites and Services - a missing subnet sends clients to a remote DC.",
+    "For VPN clients enable wait-for-network at startup or use an always-on device tunnel."
+   ],
+   "commands": [
+    "Test-ComputerSecureChannel -Verbose",
+    "Test-ComputerSecureChannel -Repair -Credential (Get-Credential)",
+    "nltest /dsgetdc:%USERDNSDOMAIN%",
+    "Resolve-DnsName -Type SRV _ldap._tcp.dc._msdcs.%USERDNSDOMAIN%"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/troubleshoot-netlogon-error-5719"
+  },
+  {
+   "id": "SYS-SCHANNEL",
+   "providers": [
+    "Schannel"
+   ],
+   "eventIds": [
+    36871,
+    36874,
+    36887,
+    36888
+   ],
+   "title": "TLS/SSL negotiation failure (Schannel)",
+   "severity": "Warning",
+   "cause": "Client and server could not agree a TLS version or cipher suite, or a fatal alert was received. Often follows TLS hardening, cipher policy changes, or an expired or untrusted certificate.",
+   "impact": "HTTPS calls fail - breaking Intune check-in, Windows Update and line-of-business apps.",
+   "steps": [
+    "Decode the alert code (40 = handshake failure, 46/48 = certificate problem, 70 = protocol version).",
+    "Check the SCHANNEL protocol keys and .NET strong-crypto settings.",
+    "Confirm TLS 1.2 and ideally 1.3 are enabled for client and server roles.",
+    "Verify the target certificate chain and that root and intermediate CAs are present locally (Certificates tab).",
+    "Capture the handshake to confirm offered cipher suites match what the server accepts."
+   ],
+   "commands": [
+    "Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\SCHANNEL\\Protocols' -Recurse",
+    "Get-TlsCipherSuite | Select-Object -ExpandProperty Name",
+    "Test-NetConnection <host> -Port 443"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-server/security/tls/tls-registry-settings"
+  },
+  {
+   "id": "NET-FIREWALL-CONFIG",
+   "providers": [
+    "Windows Firewall With Advanced Security",
+    "Windows-Firewall"
+   ],
+   "eventIds": [
+    2003,
+    2004,
+    2005,
+    2006,
+    2008,
+    2009,
+    2010,
+    2011,
+    2033
+   ],
+   "title": "Windows Defender Firewall setting or rule changed",
+   "severity": "Warning",
+   "cause": "A firewall profile setting was changed (2003), or a rule was added, modified or deleted (2004/2005/2006). The source is usually Group Policy, an Intune endpoint-security profile, a software installer, or a local administrator.",
+   "impact": "Unexpected changes either open the endpoint up or silently break an application. Profile-level changes to the default inbound action are the highest-risk category.",
+   "steps": [
+    "Read the Modifying Application and Modifying User fields in the event to identify what made the change.",
+    "Compare the current profile state against your intended baseline in the Network tab Firewall card.",
+    "If the change came from policy, confirm whether GPO or the Intune firewall profile owns this setting - overlapping ownership causes flip-flopping.",
+    "For rules added by an installer, decide whether the rule is required and scope it to the correct profile and remote address range.",
+    "Enable firewall logging for dropped packets if you need to prove what is being blocked.",
+    "Restore the baseline by re-applying policy rather than editing rules locally."
+   ],
+   "commands": [
+    "Get-NetFirewallProfile | Format-Table Name,Enabled,DefaultInboundAction,DefaultOutboundAction,LogBlocked",
+    "Set-NetFirewallProfile -Profile Domain,Private,Public -LogBlocked True",
+    "netsh advfirewall show allprofiles"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/"
+  },
+  {
+   "id": "NET-FIREWALL-BLOCKED",
+   "providers": [
+    "Security-Auditing"
+   ],
+   "eventIds": [
+    5152,
+    5157
+   ],
+   "title": "Windows Filtering Platform blocked a connection",
+   "severity": "Warning",
+   "cause": "WFP dropped a packet (5152) or blocked a connection (5157). This only appears when Filtering Platform Connection auditing is enabled, and it names the application, direction, addresses and ports.",
+   "impact": "The named application cannot communicate. Bursts against a single port normally mean a missing allow rule after a deployment or profile change.",
+   "steps": [
+    "Note the Application Name, Direction, Source and Destination Address and Port from the event.",
+    "Confirm the network profile in force - a rule scoped to Domain will not apply on a Public profile.",
+    "Create or scope an allow rule for the specific program and port rather than disabling the firewall.",
+    "If the traffic is unexpected, treat it as a security signal and escalate before allowing it."
+   ],
+   "commands": [
+    "Get-NetConnectionProfile",
+    "Get-NetFirewallRule -Enabled True | Where-Object Direction -eq 'Inbound' | Format-Table DisplayName,Profile,Action",
+    "auditpol /get /subcategory:\"Filtering Platform Connection\"",
+    "Get-Content $env:SystemRoot\\System32\\LogFiles\\Firewall\\pfirewall.log -Tail 100"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/security/threat-protection/auditing/event-5157"
+  },
+  {
+   "id": "NET-NLA-PROFILE",
+   "providers": [
+    "NetworkProfile",
+    "NlaSvc"
+   ],
+   "eventIds": [
+    10000,
+    10001,
+    4000,
+    4001,
+    4002
+   ],
+   "title": "Network profile changed or Network Location Awareness could not identify the network",
+   "severity": "Warning",
+   "cause": "Windows classified the connection as Public or Private instead of DomainAuthenticated, usually because NLA could not reach a domain controller in time at boot, on VPN connect, or after a wake.",
+   "impact": "Domain-scoped firewall rules stop applying, which breaks remote management, file and printer sharing and some line-of-business apps - a very common 'works after a reboot' complaint.",
+   "steps": [
+    "Check the current profile with Get-NetConnectionProfile and compare against what the firewall rules expect.",
+    "Confirm the device can reach a DC and that DNS is correct on the active adapter.",
+    "For VPN adapters, ensure the adapter is included in the domain profile and that the DNS suffix is applied.",
+    "Set the NlaSvc service to delayed start so it evaluates after the network is fully up.",
+    "For persistent misclassification on VPN, review split-tunnel DNS and NRPT configuration."
+   ],
+   "commands": [
+    "Get-NetConnectionProfile",
+    "Get-NetFirewallProfile | Format-Table Name,Enabled,DefaultInboundAction",
+    "nltest /dsgetdc:%USERDNSDOMAIN%",
+    "Restart-Service NlaSvc -Force"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/"
+  },
+  {
+   "id": "SYS-WUCLIENT",
+   "providers": [
+    "WindowsUpdateClient"
+   ],
+   "eventIds": [
+    16,
+    20,
+    25,
+    31,
+    34
+   ],
+   "title": "Windows Update download or installation failure",
+   "severity": "Error",
+   "cause": "An update failed. The message carries an 0x8024xxxx (WU), 0x800Fxxxx (servicing) or 0x8007xxxx (Win32) code identifying the layer.",
+   "impact": "Devices drift out of compliance, cascading into Conditional Access and vulnerability findings.",
+   "steps": [
+    "Extract the hex code and classify it: 0x8024 = WU/proxy/WSUS, 0x800F = component servicing, 0x8007 = disk or permissions.",
+    "Confirm free space on the system drive (servicing needs several GB) and that no reboot is pending.",
+    "Repair the component store, then retry.",
+    "Reset the Windows Update cache if downloads repeatedly fail.",
+    "Review update ring and WSUS policy conflicts - a device pointed at both commonly fails here.",
+    "Read CBS.log and WindowsUpdate.log for the FIRST failure, not the last."
+   ],
+   "commands": [
+    "Get-WindowsUpdateLog",
+    "DISM /Online /Cleanup-Image /RestoreHealth",
+    "sfc /scannow",
+    "Get-Service wuauserv,bits,cryptsvc | Format-Table Name,Status,StartType"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/installing-updates-features-roles/windows-update-issues-troubleshooting"
+  },
+  {
+   "id": "APP-ERROR-1000",
+   "providers": [
+    "Application Error"
+   ],
+   "eventIds": [
+    1000
+   ],
+   "title": "Application crash (faulting module recorded)",
+   "severity": "Error",
+   "cause": "A user-mode process terminated with an unhandled exception. The message names the faulting application, module and exception code (0xc0000005 = access violation).",
+   "impact": "The user loses work. When the faulting module is a shared DLL or add-in, the crash spreads fleet-wide.",
+   "steps": [
+    "Record faulting application name and version, module name and version, and the exception code.",
+    "If the module belongs to a third-party add-in (Office COM add-ins are the classic case) disable it to confirm.",
+    "Update or repair the application; for Office use Office repair or a channel update.",
+    "Configure LocalDumps under Windows Error Reporting to capture a dump for the vendor.",
+    "Check whether crashes started after an OS, driver or agent update and correlate with install dates."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000} -MaxEvents 20 | Format-List TimeCreated,Message",
+    "New-Item 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps' -Force",
+    "Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 10"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps"
+  },
+  {
+   "id": "APP-HANG-1002",
+   "providers": [
+    "Application Hang"
+   ],
+   "eventIds": [
+    1002
+   ],
+   "title": "Application stopped responding",
+   "severity": "Warning",
+   "cause": "The app stopped pumping its message queue - typically waiting on network or file I/O, a slow mapped drive, a printer query, or an add-in deadlock.",
+   "impact": "Users report freezes, often mistaken for a machine performance problem.",
+   "steps": [
+    "Note whether hangs cluster around network, file access or printing.",
+    "Test with mapped drives and the default printer removed to isolate slow resources.",
+    "Disable add-ins one at a time for Office apps.",
+    "Collect a hang dump while frozen (Task Manager, right-click process, Create dump file).",
+    "Check storage and network latency during the hang window."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='Application';Id=1002} -MaxEvents 20 | Format-List TimeCreated,Message",
+    "Get-Process <name> | Select-Object Name,Id,Responding,WorkingSet64"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps"
+  },
+  {
+   "id": "APP-NETRUNTIME",
+   "providers": [
+    ".NET Runtime"
+   ],
+   "eventIds": [
+    1023,
+    1026
+   ],
+   "title": ".NET unhandled exception in an application",
+   "severity": "Error",
+   "cause": "A managed application threw an exception no handler caught. The message contains the exception type and stack trace.",
+   "impact": "The app dies; the stack trace normally identifies the failing assembly immediately.",
+   "steps": [
+    "Read the exception type and top stack frames - they name the assembly to chase.",
+    "Verify the required .NET runtime version is installed.",
+    "Check for a missing config file, invalid connection string, or certificate/permission problem in the trace.",
+    "Send the full trace to the application owner or vendor rather than reimaging."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='Application';Id=@(1023,1026)} -MaxEvents 10 | Format-List TimeCreated,Message",
+    "dotnet --list-runtimes"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/dotnet/framework/debug-trace-profile/"
+  },
+  {
+   "id": "APP-PROFILE",
+   "providers": [
+    "User Profile"
+   ],
+   "eventIds": [
+    1530,
+    1500,
+    1511,
+    1515,
+    1533,
+    1542
+   ],
+   "title": "User profile load or unload problem",
+   "severity": "Warning",
+   "cause": "Windows could not cleanly load, unload or unmount the profile. 1530 means the registry hive was still in use at logoff; 1500/1511 mean the profile could not load and a temporary profile was used.",
+   "impact": "Users get a temporary profile and lose settings; on VDI, profile bloat and corruption follow.",
+   "steps": [
+    "Identify the SID in the message and map it to a user.",
+    "Check ProfileList for a .bak or duplicate SID entry.",
+    "For 1530 find the process holding the hive open - roaming/FSLogix, AV and backup agents are frequent offenders.",
+    "Verify profile folder ACLs and that ProfileImagePath matches the folder on disk.",
+    "For FSLogix or roaming environments check container mount logs rather than the local profile."
+   ],
+   "commands": [
+    "Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList' | Get-ItemProperty | Select-Object PSChildName,ProfileImagePath",
+    "Get-CimInstance Win32_UserProfile | Select-Object LocalPath,SID,Special,Loaded,Status"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/user-profiles-and-logon/user-profile-general-troubleshooting"
+  },
+  {
+   "id": "APP-VSS",
+   "providers": [
+    "VSS",
+    "volsnap"
+   ],
+   "eventIds": [
+    8193,
+    8194,
+    12289,
+    12293,
+    25,
+    36
+   ],
+   "title": "Volume Shadow Copy Service failure",
+   "severity": "Error",
+   "cause": "A VSS writer or provider failed - commonly insufficient shadow storage, disk pressure, a failed writer, or COM/registry permissions.",
+   "impact": "Backups, System Restore and snapshot-based tooling fail silently until someone checks.",
+   "steps": [
+    "List the writers and look for any not in Stable / No error state.",
+    "Restart the affected writer's owning service (this resets the writer).",
+    "Check and increase shadow storage on the volume.",
+    "Free disk space - VSS needs headroom to create snapshots.",
+    "Re-register VSS COM components only as a last resort, then reboot."
+   ],
+   "commands": [
+    "vssadmin list writers",
+    "vssadmin list shadowstorage",
+    "vssadmin resize shadowstorage /for=C: /on=C: /maxsize=10%"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-server/storage/file-server/volume-shadow-copy-service"
+  },
+  {
+   "id": "GP-1058",
+   "providers": [
+    "GroupPolicy"
+   ],
+   "eventIds": [
+    1058
+   ],
+   "title": "Group Policy could not read gpt.ini from SYSVOL",
+   "severity": "Error",
+   "cause": "The client could not open the policy gpt.ini in SYSVOL. Roots: DFSR/SYSVOL replication failure, NTFS or share permissions, hardened UNC path policy, or network/DNS reaching the DC.",
+   "impact": "That GPO does not apply at all - settings silently revert or never arrive.",
+   "steps": [
+    "Copy the GUID from the message and test whether the SYSVOL path is reachable from the client.",
+    "Verify SYSVOL replication health on the DCs (DFSR backlog, SYSVOL shared).",
+    "Check hardened UNC path policy - NETLOGON and SYSVOL require mutual authentication and integrity.",
+    "Confirm the client resolves and reaches the DC named in the event; check for stale DNS or blocked SMB 445.",
+    "Inspect NTFS permissions on the policy folder - Authenticated Users need Read."
+   ],
+   "commands": [
+    "Test-Path \"\\\\$env:USERDNSDOMAIN\\SYSVOL\\$env:USERDNSDOMAIN\\Policies\"",
+    "dfsrdiag ReplicationState /member:<DC>",
+    "gpupdate /force"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/applying-group-policy-troubleshooting-guidance"
+  },
+  {
+   "id": "GP-1030",
+   "providers": [
+    "GroupPolicy"
+   ],
+   "eventIds": [
+    1030
+   ],
+   "title": "Group Policy failed to retrieve the list of GPOs",
+   "severity": "Error",
+   "cause": "The client could not query AD for applicable GPOs - LDAP connectivity, Kerberos, the machine account, or DC availability.",
+   "impact": "No policy refresh at all that cycle; with 1058 it usually means a broader AD connectivity problem.",
+   "steps": [
+    "Check the secure channel and Kerberos health for the computer account.",
+    "Verify time skew against the DC - more than five minutes breaks Kerberos.",
+    "Test LDAP to the DC on 389/636 and confirm the correct AD site is used.",
+    "Purge the Kerberos ticket cache and retry a policy refresh."
+   ],
+   "commands": [
+    "Test-ComputerSecureChannel -Verbose",
+    "w32tm /query /status",
+    "klist purge -li 0x3e7",
+    "Test-NetConnection <DC> -Port 389"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/applying-group-policy-troubleshooting-guidance"
+  },
+  {
+   "id": "GP-CSE",
+   "providers": [
+    "GroupPolicy"
+   ],
+   "eventIds": [
+    6016,
+    7016,
+    8016,
+    7017,
+    7320,
+    7326
+   ],
+   "title": "A Group Policy client-side extension failed or timed out",
+   "severity": "Error",
+   "cause": "One CSE (Registry, Security, Drive Maps, Folder Redirection, Software Installation, Preferences) failed while processing. The event names the extension and an error code.",
+   "impact": "Only that category of settings is missing - which is why 'some policies apply and some do not'.",
+   "steps": [
+    "Identify the extension name and target troubleshooting at that CSE only.",
+    "Open the Group Policy Operational log and filter by the ActivityID of the failed cycle for the full sequence.",
+    "For Preferences failures check the trace log and event 4098 detail.",
+    "For Software Installation or Folder Redirection verify the UNC target is reachable with the computer or user account.",
+    "Enable Group Policy debug logging (gpsvc.log) if the operational log is inconclusive."
+   ],
+   "commands": [
+    "Get-WinEvent -LogName 'Microsoft-Windows-GroupPolicy/Operational' -MaxEvents 100 | Format-Table TimeCreated,Id,Message -Wrap",
+    "gpresult /h C:\\Temp\\rsop.html /f"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/applying-group-policy-troubleshooting-guidance"
+  },
+  {
+   "id": "GP-1085",
+   "providers": [
+    "GroupPolicy"
+   ],
+   "eventIds": [
+    1085,
+    1096,
+    1097,
+    1112,
+    1129
+   ],
+   "title": "Group Policy setting could not be applied",
+   "severity": "Warning",
+   "cause": "1085 means a CSE failed to apply a specific setting; 1096 means registry.pol is corrupt or unreadable; 1129 means policy was skipped because no network was available at boot (very common on Wi-Fi-only and VPN devices).",
+   "impact": "Settings apply late or not at all; 1129 typically self-heals at the next refresh once the network is up.",
+   "steps": [
+    "For 1129 enable 'Always wait for the network at computer startup and logon' or deploy an always-on device tunnel.",
+    "For 1096 validate or replace registry.pol in the GPO Machine or User folder in SYSVOL.",
+    "Check whether slow-link detection is throttling processing over VPN and tune the slow link value.",
+    "Force a full refresh and confirm the event clears."
+   ],
+   "commands": [
+    "gpupdate /force",
+    "Get-WinEvent -LogName 'Microsoft-Windows-GroupPolicy/Operational' -MaxEvents 60 | Where-Object Id -in 1085,1096,1129 | Format-List TimeCreated,Id,Message"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/applying-group-policy-troubleshooting-guidance"
+  },
+  {
+   "id": "GP-PREF-4098",
+   "providers": [
+    "Group Policy"
+   ],
+   "eventIds": [
+    4098
+   ],
+   "title": "Group Policy Preferences item failed",
+   "severity": "Warning",
+   "cause": "A Preferences item (drive map, printer, shortcut, registry, scheduled task, local user or group) failed. The message contains the item name and a return code.",
+   "impact": "Drive mappings, printers or shortcuts missing for users - a top-volume helpdesk ticket.",
+   "steps": [
+    "Decode the return code at the end of the message (0x80070005 = access denied, 0x80070035 = network path not found).",
+    "Check item-level targeting - the item may simply not be targeted at this user or device.",
+    "Verify the share or printer path is reachable as the affected user.",
+    "Remember drive maps run in user context - they fail if the user lacks rights on the share regardless of computer rights."
+   ],
+   "commands": [
+    "net helpmsg <decimal>",
+    "Get-SmbMapping"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/dn789189(v=ws.11)"
+  },
+  {
+   "id": "MDM-ENROLL-76",
+   "providers": [
+    "DeviceManagement-Enterprise-Diagnostics-Provider"
+   ],
+   "eventIds": [
+    76
+   ],
+   "title": "Auto MDM Enroll: FAILED",
+   "severity": "Error",
+   "cause": "Automatic enrolment into Intune failed. The trailing Win32 code identifies why - 0x8018002b is the classic 'no Intune licence or user outside MDM user scope'; others point at an existing enrolment, stale artefacts or a missing PRT.",
+   "impact": "The device never appears in Intune, so no compliance, apps or configuration profiles reach it.",
+   "steps": [
+    "Decode the Win32 code in the message and treat it as the primary clue.",
+    "Confirm the signed-in user has an Intune licence and is in the MDM user scope for automatic enrolment.",
+    "Run dsregcmd /status: AzureAdJoined must be YES, AzureAdPrt must be YES, and MdmUrl must be populated.",
+    "For hybrid devices verify the automatic MDM enrolment policy is applying and Entra Connect has synced the device object.",
+    "Check for stale enrolment artefacts under HKLM\\SOFTWARE\\Microsoft\\Enrollments and remove leftovers from a previous MDM before retrying.",
+    "Confirm no enrolment restriction is blocking the device.",
+    "Trigger the auto-enrol task manually and re-check the log."
+   ],
+   "commands": [
+    "dsregcmd /status",
+    "Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Enrollments' | Get-ItemProperty | Select-Object PSChildName,ProviderID,EnrollmentState,UPN",
+    "C:\\Windows\\system32\\deviceenroller.exe /c /AutoEnrollMDM",
+    "[ComponentModel.Win32Exception]::new(0x8018002b).Message"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/client-management/mdm-diagnose-enrollment"
+  },
+  {
+   "id": "MDM-ENROLL-75",
+   "providers": [
+    "DeviceManagement-Enterprise-Diagnostics-Provider"
+   ],
+   "eventIds": [
+    75
+   ],
+   "title": "Auto MDM Enroll: SUCCEEDED",
+   "severity": "Information",
+   "cause": "Automatic enrolment into the MDM service completed. This is the positive control event for hybrid and Entra-joined enrolment.",
+   "impact": "None - use it as proof of the enrolment timestamp when building a timeline.",
+   "steps": [
+    "Confirm an MS DM Server enrolment now exists with EnrollmentState = 1.",
+    "Verify the Intune MDM device certificate was issued in LocalMachine\\My (Certificates tab).",
+    "If the device still does not show in the Intune console, check the sync scheduled tasks under \\Microsoft\\Windows\\EnterpriseMgmt."
+   ],
+   "commands": [
+    "Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Enrollments' | Get-ItemProperty | Where-Object ProviderID -eq 'MS DM Server'",
+    "Get-ChildItem Cert:\\LocalMachine\\My | Where-Object Issuer -match 'Intune MDM'"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/client-management/mdm-collect-logs"
+  },
+  {
+   "id": "MDM-OMADM",
+   "providers": [
+    "DeviceManagement-Enterprise-Diagnostics-Provider"
+   ],
+   "eventIds": [
+    201,
+    202,
+    208,
+    209,
+    210
+   ],
+   "title": "OMA-DM session failure (device could not reach the MDM service)",
+   "severity": "Error",
+   "cause": "The sync session failed - HTTP 401 means device authentication was rejected, 5xx means service-side, network errors mean proxy, TLS interception or a blocked endpoint.",
+   "impact": "The device stops receiving policy, apps and compliance evaluation while still appearing enrolled.",
+   "steps": [
+    "Note the HTTP status: 401 authentication, 403 authorisation or invalid enrolment, 5xx service side.",
+    "Check the Intune MDM device certificate exists and has not expired.",
+    "Verify the device reaches Intune endpoints on 443 without TLS inspection (use a Port Check card).",
+    "Confirm the device object still exists in Intune - a deleted object gives persistent 401/403.",
+    "Force a sync and watch the Admin channel live; if 401 persists, re-enrol.",
+    "Collect the full MDM diagnostic bundle for a support case."
+   ],
+   "commands": [
+    "Test-NetConnection manage.microsoft.com -Port 443",
+    "Test-NetConnection enrollment.manage.microsoft.com -Port 443",
+    "mdmdiagnosticstool.exe -area \"DeviceEnrollment;DeviceProvisioning;Autopilot\" -zip C:\\Temp\\MDMDiag.zip"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/client-management/mdm-collect-logs"
+  },
+  {
+   "id": "MDM-CSP",
+   "providers": [
+    "DeviceManagement-Enterprise-Diagnostics-Provider"
+   ],
+   "eventIds": [
+    404,
+    405,
+    813,
+    814,
+    815,
+    1906,
+    2545
+   ],
+   "title": "MDM ConfigurationManager / CSP node operation failed",
+   "severity": "Error",
+   "cause": "A configuration service provider node could not be read or written. Usually the CSP is unsupported on this edition or build, the value is invalid, a dependency is missing, or the setting conflicts with an existing GPO.",
+   "impact": "The related Intune configuration profile shows Error or Conflict for this device.",
+   "steps": [
+    "Copy the CSP URI from the message - it tells you exactly which profile setting failed.",
+    "Verify the CSP is supported on this Windows edition and build (many are Enterprise or Education only).",
+    "Check for a competing Group Policy setting - by default GPO wins unless MDMWinsOverGP is enabled.",
+    "Look for the same setting in another profile - duplicate assignment with different values produces a Conflict.",
+    "Compare applied Policy CSP registry values with the intended value.",
+    "Remove the assignment, sync, re-add and sync again to force a clean write."
+   ],
+   "commands": [
+    "Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device' | Select-Object PSChildName",
+    "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\<Area>'"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/client-management/mdm/configuration-service-provider-reference"
+  },
+  {
+   "id": "SEC-4625",
+   "providers": [
+    "Security-Auditing"
+   ],
+   "eventIds": [
+    4625
+   ],
+   "title": "Failed logon attempt",
+   "severity": "Warning",
+   "cause": "Authentication failed. Status and Sub Status codes classify it: 0xC000006A wrong password, 0xC0000064 unknown user, 0xC0000234 locked, 0xC0000072 disabled.",
+   "impact": "A burst from one source is either a stale credential (service, mapped drive, scheduled task) or a password-spray attempt.",
+   "steps": [
+    "Group failures by Account Name, Source Network Address and Logon Type to spot the pattern.",
+    "Logon Type 3 from a server usually means a stale saved credential or service account; Type 10 means RDP.",
+    "Check Credential Manager, mapped drives, scheduled tasks and services running as the account.",
+    "If the source is external or volume is high, escalate to security operations and check Entra sign-in logs.",
+    "Confirm Smart Lockout and Conditional Access are functioning for internet-facing identities."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='Security';Id=4625} -MaxEvents 100 | Format-List TimeCreated,Message",
+    "cmdkey /list"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4625"
+  },
+  {
+   "id": "SEC-4740",
+   "providers": [
+    "Security-Auditing"
+   ],
+   "eventIds": [
+    4740,
+    4767
+   ],
+   "title": "User account locked out",
+   "severity": "Warning",
+   "cause": "The bad-password threshold was reached. The Caller Computer Name points at the source of the bad credentials.",
+   "impact": "The user is locked out repeatedly until the stale credential is found and cleared.",
+   "steps": [
+    "Read the Caller Computer Name - that device is submitting the bad password.",
+    "On that device clear Credential Manager entries, remap drives, and update credentials on services and scheduled tasks.",
+    "Check mobile devices with saved mail credentials - a very common repeat offender.",
+    "Pull all 4740 events from the PDC emulator, which holds the authoritative lockout events."
+   ],
+   "commands": [
+    "Get-WinEvent -FilterHashtable @{LogName='Security';Id=4740} -MaxEvents 50 | Format-List TimeCreated,Message",
+    "Search-ADAccount -LockedOut | Select-Object Name,SamAccountName,LastLogonDate",
+    "cmdkey /list"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4740"
+  },
+  {
+   "id": "SYS-BITLOCKER",
+   "providers": [
+    "BitLocker",
+    "BitLocker-API",
+    "BitLocker-DrivePreparationTool"
+   ],
+   "eventIds": [
+    24586,
+    24588,
+    776,
+    777,
+    778,
+    846,
+    847,
+    848,
+    853
+   ],
+   "title": "BitLocker encryption or recovery-key escrow problem",
+   "severity": "Error",
+   "cause": "Encryption failed to start or complete, or the recovery key could not be backed up to Entra ID or AD. Frequent roots: TPM not ready, Secure Boot or PCR changes, no PRT for Entra escrow, or a GPO versus Intune disk-encryption policy conflict.",
+   "impact": "Devices report non-compliant and, worse, can be encrypted with no escrowed recovery key.",
+   "steps": [
+    "Check TPM readiness and Secure Boot state first - encryption will not start without a usable protector.",
+    "Verify the recovery key actually escrowed; if not, back it up manually then fix the root cause.",
+    "Look for a GPO configuring BitLocker alongside the Intune disk-encryption profile - overlapping ownership is the number one cause of stuck encryption.",
+    "Review the BitLocker-API Management channel for the precise failure event.",
+    "Resume protection if it is merely suspended after a firmware update."
+   ],
+   "commands": [
+    "Get-BitLockerVolume | Select-Object MountPoint,VolumeStatus,ProtectionStatus,EncryptionPercentage",
+    "manage-bde -status",
+    "Get-Tpm",
+    "BackupToAAD-BitLockerKeyProtector -MountPoint 'C:' -KeyProtectorId '<id>'"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/security/operating-system-security/data-protection/bitlocker/"
+  },
+  {
+   "id": "SYS-TPM",
+   "providers": [
+    "TPM-WMI"
+   ],
+   "eventIds": [
+    1794,
+    1795,
+    1796,
+    1797,
+    1798,
+    15,
+    16,
+    17
+   ],
+   "title": "TPM error or state change",
+   "severity": "Error",
+   "cause": "The TPM reported a fault, was cleared, or its measured-boot state changed (firmware update, Secure Boot change, hardware change, or vTPM configuration change).",
+   "impact": "Breaks BitLocker unlock, Windows Hello for Business, device attestation and Conditional Access compliance.",
+   "steps": [
+    "Check TPM presence, readiness and version, and whether firmware needs an OEM update.",
+    "If the device is a VM confirm a vTPM is attached and persisted - a moved or recreated VM loses TPM identity.",
+    "After a BIOS/UEFI update expect a one-time PCR change; re-enable protectors and re-register Hello for Business if prompted.",
+    "If the TPM is in a bad state remember clearing it is destructive - suspend BitLocker and back up recovery keys first.",
+    "Re-register the device for attestation-based compliance after any TPM change."
+   ],
+   "commands": [
+    "Get-Tpm",
+    "tpmtool getdeviceinformation",
+    "Confirm-SecureBootUEFI",
+    "dsregcmd /status"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/security/hardware-security/tpm/trusted-platform-module-top-node"
+  },
+  {
+   "id": "SYS-DEFENDER",
+   "providers": [
+    "Windows Defender"
+   ],
+   "eventIds": [
+    1006,
+    1007,
+    1008,
+    1116,
+    1117,
+    1118,
+    1119,
+    5001,
+    5007,
+    5010,
+    5012
+   ],
+   "title": "Microsoft Defender detection or protection-state change",
+   "severity": "Error",
+   "cause": "Defender detected malware (1116/1117) or a protection feature was disabled or changed (5001/5010/5012). Unexpected disablement is itself a security signal.",
+   "impact": "Either an active threat, or the endpoint is running unprotected and will fail compliance.",
+   "steps": [
+    "For detections record the threat name, path and action taken, then confirm remediation succeeded.",
+    "For protection-disabled events determine what disabled it: policy, tamper attempt, or a third-party AV registering itself.",
+    "Confirm Tamper Protection is enabled - it prevents most unauthorised disablement.",
+    "Verify signature age and force an update if stale.",
+    "Run a full scan and escalate to security operations if a detection is confirmed."
+   ],
+   "commands": [
+    "Get-MpComputerStatus | Select-Object AMServiceEnabled,RealTimeProtectionEnabled,AntivirusSignatureAge,IsTamperProtected",
+    "Get-MpThreatDetection | Sort-Object InitialDetectionTime -Descending | Select-Object -First 10",
+    "Update-MpSignature"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/defender-endpoint/troubleshoot-microsoft-defender-antivirus"
+  },
+  {
+   "id": "SYS-PRINT",
+   "providers": [
+    "PrintService",
+    "Print-Spooler"
+   ],
+   "eventIds": [
+    372,
+    808,
+    4909,
+    215,
+    216
+   ],
+   "title": "Print spooler or driver problem",
+   "severity": "Warning",
+   "cause": "A print job failed, a driver could not load, or the spooler is blocking an unsigned or v3 driver after point-and-print hardening.",
+   "impact": "Users cannot print; driver installation from servers is restricted by default after the security changes.",
+   "steps": [
+    "Determine whether the failure is driver installation (RestrictDriverInstallationToAdministrators) or job rendering.",
+    "Prefer Universal Print or a v4 class driver instead of vendor v3 drivers.",
+    "Clear the spool folder and restart the spooler if jobs are stuck.",
+    "Verify the printer port or host is reachable and review any Intune printer-deployment policy."
+   ],
+   "commands": [
+    "Get-Printer | Format-Table Name,DriverName,PortName,PrinterStatus",
+    "Restart-Service Spooler -Force",
+    "Get-ChildItem 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Printers\\PointAndPrint'"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/printing/print-spooler-troubleshooting"
+  },
+  {
+   "id": "SYS-PERF-BOOT",
+   "providers": [
+    "Diagnostics-Performance"
+   ],
+   "eventIds": [
+    100,
+    101,
+    102,
+    103,
+    106,
+    109,
+    110
+   ],
+   "title": "Boot or shutdown performance degradation",
+   "severity": "Warning",
+   "cause": "Windows measured a slow boot, slow logon, or a specific service, driver or application delaying startup. The event names the component and the delay in milliseconds.",
+   "impact": "Poor user experience and a top driver of Endpoint Analytics startup-score regressions.",
+   "steps": [
+    "Read the component name and degradation time - it points directly at the offender.",
+    "Compare against Endpoint Analytics startup performance for the same device in Intune.",
+    "Disable or delay non-essential startup applications and set delayed start for heavy services.",
+    "Check disk health and whether the device is still on a spinning disk.",
+    "Review logon scripts, drive maps and Folder Redirection over slow links, which dominate slow-logon cases."
+   ],
+   "commands": [
+    "Get-WinEvent -LogName 'Microsoft-Windows-Diagnostics-Performance/Operational' -MaxEvents 30 | Format-Table TimeCreated,Id,Message -Wrap",
+    "Get-CimInstance Win32_StartupCommand | Select-Object Name,Command,Location"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/mem/analytics/overview"
+  },
+  {
+   "id": "SYS-TIME",
+   "providers": [
+    "Time-Service",
+    "W32Time"
+   ],
+   "eventIds": [
+    29,
+    36,
+    38,
+    47,
+    50,
+    129,
+    131,
+    134
+   ],
+   "title": "Windows Time service cannot synchronise",
+   "severity": "Warning",
+   "cause": "The time source is unreachable or rejected. Domain devices must sync from the domain hierarchy; Entra-only devices use time.windows.com.",
+   "impact": "Skew above five minutes breaks Kerberos, certificate validation, MFA and token issuance - producing bizarre, unrelated-looking failures.",
+   "steps": [
+    "Check the current source and offset.",
+    "For domain-joined devices ensure NT5DS (domain hierarchy) rather than a hard-coded NTP peer.",
+    "Verify UDP 123 is open to the time source and the source is reachable.",
+    "Resync and, if needed, unregister and re-register the time service.",
+    "On VMs avoid double time sync (host integration plus NTP) - pick one authority."
+   ],
+   "commands": [
+    "w32tm /query /status",
+    "w32tm /query /source",
+    "w32tm /resync /force",
+    "w32tm /config /syncfromflags:domhier /update"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-server/networking/windows-time-service/windows-time-service-top"
+  },
+  {
+   "id": "SYS-NIC",
+   "providers": [
+    "e1",
+    "Netwtw",
+    "NDIS",
+    "Tcpip",
+    "iaLPSS",
+    "Intel"
+   ],
+   "eventIds": [
+    27,
+    4201,
+    4202,
+    4227,
+    4231,
+    5002
+   ],
+   "title": "Network adapter link or driver instability",
+   "severity": "Warning",
+   "cause": "The NIC lost link, reset itself, or the TCP stack reported port exhaustion or connection resets. Common on Wi-Fi roaming, docking stations, and after power-management-driven adapter sleep.",
+   "impact": "Intermittent disconnects surfacing as VPN drops, Teams call quality issues and failed Intune check-ins.",
+   "steps": [
+    "Update the NIC or Wi-Fi driver and the dock firmware - this fixes most dock-related link flaps.",
+    "Disable 'Allow the computer to turn off this device to save power' on the adapter.",
+    "For Tcpip 4227/4231 (port exhaustion) identify the process leaking sockets.",
+    "For Wi-Fi review roaming aggressiveness and band preference and check the WLAN-AutoConfig log.",
+    "Run a continuous Ping card against the gateway and an internet host to correlate drops with the event timestamps."
+   ],
+   "commands": [
+    "Get-NetAdapter | Format-Table Name,InterfaceDescription,Status,LinkSpeed,DriverVersion",
+    "Get-NetAdapterPowerManagement -Name '*'",
+    "netstat -ano | Select-String TIME_WAIT | Measure-Object"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/"
+  },
+  {
+   "id": "SYS-APPMODEL",
+   "providers": [
+    "AppModel-Runtime",
+    "AppXDeployment",
+    "AppXDeployment-Server",
+    "AppReadiness"
+   ],
+   "eventIds": [
+    65,
+    69,
+    401,
+    404,
+    431,
+    854
+   ],
+   "title": "Store or packaged app (AppX) deployment failure",
+   "severity": "Warning",
+   "cause": "A packaged app failed to register or deploy - typically a partially removed provisioned package, a profile predating the package, or policy blocking the Store.",
+   "impact": "Start menu, Settings, Photos, Terminal or company Store apps fail to launch for specific users.",
+   "steps": [
+    "Determine whether the failure is per-user (registration) or per-machine (provisioning).",
+    "Re-register the package for the affected user, or reprovision for the machine.",
+    "Check Intune or GPO policy that disables the Microsoft Store or blocks app installation.",
+    "Avoid bulk Remove-AppxPackage scripts on modern builds - they are the usual root cause."
+   ],
+   "commands": [
+    "Get-AppxPackage -Name <name> | Format-List Name,Version,Status,InstallLocation",
+    "Get-AppxLog -All"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes"
+  },
+  {
+   "id": "SYS-ESENT",
+   "providers": [
+    "ESENT"
+   ],
+   "eventIds": [
+    455,
+    465,
+    474,
+    490,
+    623,
+    642
+   ],
+   "title": "ESENT database error (Windows internal database)",
+   "severity": "Warning",
+   "cause": "A component using the Extensible Storage Engine (Windows Update, Search, SRUM, Certificate Propagation, DHCP) could not open or read its database - often folder permissions or corruption after an unclean shutdown.",
+   "impact": "Depends on the owning component: search index rebuilds, Windows Update failures, or missing usage data.",
+   "steps": [
+    "Identify the database path in the message to know which component is affected.",
+    "For Windows Update (DataStore.edb) reset the SoftwareDistribution folder.",
+    "For Windows Search rebuild the index.",
+    "Verify NTFS permissions on the parent folder match a clean device.",
+    "If errors span many components suspect the disk and check storage health."
+   ],
+   "commands": [
+    "Stop-Service wuauserv,bits -Force; Rename-Item C:\\Windows\\SoftwareDistribution SoftwareDistribution.old; Start-Service wuauserv,bits",
+    "Get-Service WSearch | Restart-Service"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/"
+  },
+  {
+   "id": "SYS-TASKSCHED",
+   "providers": [
+    "TaskScheduler"
+   ],
+   "eventIds": [
+    101,
+    103,
+    111,
+    202,
+    203,
+    323,
+    329,
+    331
+   ],
+   "title": "Scheduled task failed to start or run",
+   "severity": "Warning",
+   "cause": "The task could not launch: wrong credentials, missing 'Log on as a batch job' right, an invalid executable path, or a blocking condition (idle, battery, time limit).",
+   "impact": "Automation silently stops - including MDM sync tasks and remediation scripts.",
+   "steps": [
+    "Read the task name and return code in the event.",
+    "Check the task principal and whether the stored password is stale after a rotation.",
+    "Verify the action path exists and the working directory is correct.",
+    "Confirm conditions (AC power, idle, network availability) are not blocking execution.",
+    "Test-run the task manually and inspect Last Run Result."
+   ],
+   "commands": [
+    "Get-ScheduledTask -TaskName '<name>' | Get-ScheduledTaskInfo",
+    "Get-ScheduledTask | Where-Object {$_.State -eq 'Disabled'} | Select-Object TaskPath,TaskName"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-error-and-success-constants"
+  },
+  {
+   "id": "SYS-WMI",
+   "providers": [
+    "WinRM",
+    "WMI-Activity",
+    "Windows Remote Management"
+   ],
+   "eventIds": [
+    142,
+    161,
+    5858,
+    5860,
+    5861
+   ],
+   "title": "WMI or WinRM query failure",
+   "severity": "Warning",
+   "cause": "A WMI query failed (0x80041003 access denied, 0x80041010 invalid class) or WinRM could not authenticate. A permanent event consumer left by an old agent is a very common source of repeating 5858 noise.",
+   "impact": "Inventory, monitoring and remediation scripts return incomplete data; tooling reports the device unreachable.",
+   "steps": [
+    "Look at ClientMachine, User and Operation fields to identify who issues the failing query.",
+    "For repeating 5858 list permanent WMI event consumers and remove orphans from decommissioned agents.",
+    "Verify repository health before considering a rebuild - rebuilding is disruptive and rarely needed.",
+    "For WinRM confirm the listener, firewall rule and TrustedHosts or Kerberos configuration."
+   ],
+   "commands": [
+    "winmgmt /verifyrepository",
+    "Get-CimInstance -Namespace root\\subscription -ClassName __EventFilter",
+    "winrm enumerate winrm/config/listener",
+    "Test-WSMan -ComputerName localhost"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/wmi-troubleshooting"
+  },
+  {
+   "id": "SYS-RDP",
+   "providers": [
+    "TerminalServices",
+    "RemoteDesktopServices",
+    "RemoteConnectionManager"
+   ],
+   "eventIds": [
+    20,
+    36,
+    40,
+    56,
+    226,
+    1026,
+    1149
+   ],
+   "title": "Remote Desktop session disconnect or licensing problem",
+   "severity": "Warning",
+   "cause": "The RDP session dropped (network instability or protocol error), or the RD licensing grace period expired. Disconnect reason codes classify it.",
+   "impact": "Users are dropped from remote sessions and lose work; licensing failures block all new sessions.",
+   "steps": [
+    "Map the disconnect reason code to its meaning before assuming a network fault.",
+    "Check packet loss and latency between client and host during the disconnect window with a continuous Ping card.",
+    "Disable UDP transport as a test if disconnects only occur over VPN.",
+    "For licensing errors verify the RD Licensing server and CAL configuration.",
+    "Update the RDP client and the host graphics and network drivers."
+   ],
+   "commands": [
+    "Get-WinEvent -LogName 'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational' -MaxEvents 50 | Format-Table TimeCreated,Id,Message -Wrap",
+    "qwinsta"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/remote-desktop-disconnected-or-cant-connect"
+  },
+  {
+   "id": "SYS-CERT-AUTOENROLL",
+   "providers": [
+    "CertificateServicesClient",
+    "AutoEnrollment",
+    "CertificateServicesClient-AutoEnrollment"
+   ],
+   "eventIds": [
+    6,
+    13,
+    15,
+    64,
+    82,
+    100,
+    1001
+   ],
+   "title": "Certificate auto-enrolment or renewal failure",
+   "severity": "Error",
+   "cause": "The client could not enrol or renew a certificate. Roots: no reachable CA, template permissions missing Enroll or Autoenroll, template version mismatch, or the CA declined the request.",
+   "impact": "Certificates expire silently, breaking 802.1X Wi-Fi, VPN, S/MIME, code signing and client authentication.",
+   "steps": [
+    "Read the template name and error code in the message.",
+    "Confirm the CA is reachable and issuing - check pkiview.msc on a management host.",
+    "Verify the security principal has Read, Enroll and Autoenroll on the template.",
+    "Check the certificate is not already present but expired or archived (Certificates tab).",
+    "For Intune-delivered certificates (SCEP/PKCS) check the NDES connector health rather than AD auto-enrolment.",
+    "Trigger a manual pulse and re-check the store."
+   ],
+   "commands": [
+    "certutil -pulse",
+    "certutil -store My",
+    "Get-ChildItem Cert:\\LocalMachine\\My | Select-Object Subject,NotAfter,Thumbprint",
+    "certutil -verify -urlfetch <cert.cer>"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows-server/networking/core-network-guide/cncg/server-certs/troubleshooting"
+  },
+  {
+   "id": "SEC-WDAC-CODEINTEGRITY",
+   "providers": [
+    "CodeIntegrity"
+   ],
+   "eventIds": [
+    3004,
+    3010,
+    3023,
+    3033,
+    3076,
+    3077,
+    3079,
+    3082
+   ],
+   "title": "WDAC / Code Integrity blocked a file from running",
+   "severity": "Error",
+   "cause": "App Control for Business (WDAC) or a Code Integrity policy evaluated a binary and it did not satisfy any allow rule. 3077 is an enforced block, 3076 is an audit-mode block that would have blocked under enforcement, and 3033 is a failed policy signing check.",
+   "impact": "The application simply will not start, usually with no meaningful error for the user. Under audit mode nothing is blocked, but 3076 events are a preview of what enforcement will break.",
+   "steps": [
+    "Read the file path and the signing information from the event - that names the exact binary to authorise.",
+    "Establish which policy is active, and whether it is in audit or enforced mode, before changing anything.",
+    "Distinguish 3076 (audit - would have blocked) from 3077 (enforced - did block). Only 3077 is a live user-facing outage.",
+    "Prefer authorising the publisher certificate over a file hash - hash rules break on the next application update.",
+    "For an unsigned line-of-business application, consider signing it rather than adding a path rule; path rules are the weakest option.",
+    "Roll the updated policy out in audit mode first and review 3076 events before enforcing."
+   ],
+   "commands": [
+    "Get-WinEvent -LogName 'Microsoft-Windows-CodeIntegrity/Operational' -MaxEvents 40 | Where-Object Id -in 3076,3077 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap",
+    "Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\\Microsoft\\Windows\\DeviceGuard",
+    "certutil -store -enterprise Root"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=WDAC%20App%20Control%20for%20Business%20CodeIntegrity%203077%203076%20events"
+  },
+  {
+   "id": "SEC-APPLOCKER",
+   "providers": [
+    "AppLocker"
+   ],
+   "eventIds": [
+    8003,
+    8004,
+    8006,
+    8007,
+    8022,
+    8025
+   ],
+   "title": "AppLocker blocked or audited an application",
+   "severity": "Warning",
+   "cause": "An executable, script, installer or packaged app did not match an AppLocker allow rule. The even IDs split by collection: 8004 is an enforced executable block, 8003 the audited equivalent, 8007 a blocked script and 8006 an audited script.",
+   "impact": "Enforced blocks stop the application outright. Audited events do not block but predict exactly what enforcement will break.",
+   "steps": [
+    "Read the file path and publisher from the event to identify what needs authorising.",
+    "Confirm whether the relevant rule collection is set to Enforce or Audit only - they are configured independently, so scripts can be enforced while executables are auditing.",
+    "Check that the default rules are present. Removing them is the usual cause of mass blocks after a policy change.",
+    "Authorise by publisher where the file is signed; fall back to hash for unsigned binaries and accept that it breaks on update.",
+    "Remember AppLocker rules can be scoped to a user or group - verify the affected user is actually in the intended scope."
+   ],
+   "commands": [
+    "Get-WinEvent -LogName 'Microsoft-Windows-AppLocker/EXE and DLL' -MaxEvents 40 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap",
+    "Get-AppLockerPolicy -Effective -Xml",
+    "Get-AppLockerFileInformation -Path \"C:\\Path\\To\\App.exe\""
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=AppLocker%20event%208004%208007%20rule%20collection%20enforcement"
+  },
+  {
+   "id": "NET-DHCP-CLIENT",
+   "providers": [
+    "Dhcp-Client",
+    "DhcpV6-Client",
+    "Dhcp"
+   ],
+   "eventIds": [
+    1001,
+    1002,
+    1003,
+    1005,
+    1006,
+    1007,
+    1046,
+    1059
+   ],
+   "title": "DHCP lease could not be obtained or renewed",
+   "severity": "Error",
+   "cause": "The client sent a DISCOVER or REQUEST and got no usable answer. Roots include an exhausted scope, no DHCP relay on the VLAN, a rogue server answering first, 802.1X leaving the port unauthorised, or the adapter losing link during renewal. Event 1003 specifically means the client fell back to an APIPA 169.254.x.x address.",
+   "impact": "With an APIPA address the device has no gateway and no DNS, so everything fails at once - this often gets reported as \"the internet is down\".",
+   "steps": [
+    "Check whether the current address is 169.254.x.x. That confirms total DHCP failure rather than a partial problem.",
+    "Confirm the switch port is in the expected VLAN and that a DHCP relay or helper address is configured for it.",
+    "Look at scope utilisation on the DHCP server - an exhausted scope produces exactly this on the newest devices while existing leases keep working.",
+    "If the device authenticates with 802.1X, check whether it is landing in a guest or quarantine VLAN with no scope.",
+    "Correlate with Dot3Svc or WLAN-AutoConfig events - a failed authentication immediately before the DHCP failure identifies the real cause.",
+    "Release and renew once the path is confirmed, and verify which server actually answered."
+   ],
+   "commands": [
+    "ipconfig /all",
+    "ipconfig /release; ipconfig /renew",
+    "Get-WinEvent -LogName 'Microsoft-Windows-Dhcp-Client/Admin' -MaxEvents 30 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20DHCP%20client%20APIPA%20169.254%20event%201003%20troubleshooting"
+  },
+  {
+   "id": "NET-WLAN-AUTOCONFIG",
+   "providers": [
+    "WLAN-AutoConfig",
+    "WLAN AutoConfig",
+    "Wlansvc"
+   ],
+   "eventIds": [
+    8002,
+    8003,
+    11004,
+    11005,
+    11006,
+    11010,
+    12011,
+    12012,
+    12013
+   ],
+   "title": "Wireless association or 802.1X authentication failed",
+   "severity": "Warning",
+   "cause": "The adapter could not associate with the SSID or the 802.1X exchange failed. Common roots: an expired or untrusted client certificate, a RADIUS server certificate the client does not trust, the device not being in the NPS policy group, wrong credentials, or a driver that mishandles roaming.",
+   "impact": "The device drops off wireless intermittently - typically while roaming between access points - which surfaces to users as random disconnections rather than a hard failure.",
+   "steps": [
+    "Read the reason code in the event message; the 802.1X reason text names the failing stage.",
+    "If the network uses certificate authentication, check the client certificate is present, in date and has a private key - expired user or device certificates are the most common single cause.",
+    "Verify the RADIUS/NPS server certificate chain is trusted by the client, and that the profile is not set to prompt on an untrusted server.",
+    "Confirm the device or user is still a member of the group targeted by the NPS network policy.",
+    "Update the wireless driver. Roaming defects are firmware and driver bugs far more often than configuration errors.",
+    "Compare against a second device on the same access point to separate a client problem from an infrastructure problem."
+   ],
+   "commands": [
+    "netsh wlan show interfaces",
+    "netsh wlan show profiles",
+    "Get-ChildItem Cert:\\LocalMachine\\My | Select-Object Subject,NotAfter,HasPrivateKey"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20WLAN%20AutoConfig%20802.1X%20authentication%20failed%20reason%20code"
+  },
+  {
+   "id": "NET-RASCLIENT-VPN",
+   "providers": [
+    "RasClient",
+    "RasMan",
+    "RemoteAccess"
+   ],
+   "eventIds": [
+    20226,
+    20227,
+    20232,
+    20255,
+    20271
+   ],
+   "title": "VPN connection failed (RasClient)",
+   "severity": "Warning",
+   "cause": "A dial-up or VPN connection attempt failed and the event carries the error code. Frequent roots: an expired machine or user certificate for IKEv2, a blocked protocol port, MTU and fragmentation problems, or the Always On VPN device tunnel failing before the user tunnel.",
+   "impact": "No corporate network access. If the device tunnel is the one failing, the device also cannot reach domain controllers, so logon and Group Policy degrade too.",
+   "steps": [
+    "Extract the error code from the message - 809, 812, 13801 and 13806 each point at a different layer and the code is the fastest route to the cause.",
+    "For IKEv2, confirm the machine certificate is valid, has a private key and chains to a CA the gateway trusts. 13801 is almost always a certificate problem.",
+    "Check the required ports are open end to end: UDP 500 and 4500 for IKEv2, TCP 443 for SSTP.",
+    "On Always On VPN, establish whether the device tunnel or the user tunnel failed - they have separate profiles and separate certificates.",
+    "Test from a different network. A failure only on one site is a firewall or NAT problem rather than a client one.",
+    "Check MTU if the tunnel connects but traffic stalls on larger transfers."
+   ],
+   "commands": [
+    "Get-VpnConnection -AllUserConnection | Format-List Name,ServerAddress,TunnelType,ConnectionStatus",
+    "Get-WinEvent -LogName Application -MaxEvents 30 | Where-Object ProviderName -eq 'RasClient' | Format-Table TimeCreated,Id,Message -AutoSize -Wrap",
+    "Get-ChildItem Cert:\\LocalMachine\\My | Where-Object EnhancedKeyUsageList -match 'Client Authentication' | Select-Object Subject,NotAfter"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Always%20On%20VPN%20troubleshooting%20RasClient%20error%2013801%20812%20809"
+  },
+  {
+   "id": "SEC-KERBEROS",
+   "providers": [
+    "Security-Kerberos",
+    "Kerberos-Key-Distribution-Center",
+    "Kdc"
+   ],
+   "eventIds": [
+    3,
+    4,
+    5,
+    7,
+    14,
+    17,
+    27
+   ],
+   "title": "Kerberos authentication error",
+   "severity": "Error",
+   "cause": "A Kerberos exchange failed. Event 4 (KRB_AP_ERR_MODIFIED) nearly always means a duplicate service principal name, or a computer account password out of sync with the domain - often after restoring a VM from a snapshot. Others point at clock skew, unsupported encryption types or a missing SPN.",
+   "impact": "Authentication falls back to NTLM or fails outright. Users see repeated credential prompts and access denied on file shares and internal web applications.",
+   "steps": [
+    "Read which service the failure names - the SPN in the message identifies the target.",
+    "Search the forest for a duplicate SPN. Two accounts registering the same SPN produces event 4 consistently and is the most common cause.",
+    "Check time synchronisation. Kerberos rejects tickets beyond the tolerance, so drift over five minutes breaks authentication outright.",
+    "If the machine was restored from a snapshot or reverted, the computer account password is stale - test and repair the secure channel.",
+    "Check for encryption type mismatches if the environment has disabled RC4 or requires AES.",
+    "Correlate with NETLOGON events at the same timestamp; they usually name the domain controller involved."
+   ],
+   "commands": [
+    "setspn -X -F",
+    "Test-ComputerSecureChannel -Verbose",
+    "w32tm /query /status",
+    "klist purge"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Kerberos%20KRB_AP_ERR_MODIFIED%20event%204%20duplicate%20SPN"
+  },
+  {
+   "id": "SEC-LSASRV-SCHANNEL",
+   "providers": [
+    "LsaSrv"
+   ],
+   "eventIds": [
+    6155,
+    40960,
+    40961,
+    40970,
+    45058
+   ],
+   "title": "LSA could not complete an authentication exchange",
+   "severity": "Warning",
+   "cause": "The Local Security Authority failed a SPNEGO or Kerberos negotiation. 40960 and 40961 usually accompany a domain controller that is unreachable, a clock skew problem, or a service account whose password has changed. On cloud-joined devices they also appear when a cached credential no longer matches.",
+   "impact": "Repeated credential prompts, delayed logons, and mapped drives failing to reconnect.",
+   "steps": [
+    "Read the target name in the message - it tells you whether the failure is against a domain controller, a file server or a cloud endpoint.",
+    "Confirm the device can reach a domain controller at all if this is a hybrid-joined machine.",
+    "Check clock skew against the domain; Kerberos failures cascade into LSA errors.",
+    "Clear stale cached credentials for the named target and retry.",
+    "Correlate with Security-Kerberos and NETLOGON events at the same timestamp - LSA errors are usually a symptom, and the neighbouring event names the cause.",
+    "On an Entra-joined device with no line of sight to a domain controller, confirm these are expected rather than a fault."
+   ],
+   "commands": [
+    "klist purge; klist purge -li 0x3e7",
+    "cmdkey /list",
+    "nltest /dsgetdc:%USERDNSDOMAIN%",
+    "w32tm /query /status"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=LsaSrv%20event%2040960%2040961%20troubleshooting"
+  },
+  {
+   "id": "SYS-CAPI2-CHAIN",
+   "providers": [
+    "CAPI2"
+   ],
+   "eventIds": [
+    11,
+    30,
+    41,
+    42,
+    257
+   ],
+   "title": "Certificate chain building or revocation check failed",
+   "severity": "Warning",
+   "cause": "CryptoAPI could not build a trust chain or could not reach a revocation endpoint. On corporate networks the usual cause is a proxy blocking the CRL or OCSP URL, or a TLS-inspecting proxy re-signing traffic with a certificate whose CRL distribution point is unreachable from the client.",
+   "impact": "TLS connections fail or stall for seconds while revocation checking times out. This surfaces as slow application launches and intermittent certificate warnings rather than a clean error.",
+   "steps": [
+    "Read the URL in the event - it names the exact CRL or OCSP endpoint that could not be reached.",
+    "Test that URL from the affected device through the same proxy the application uses. Revocation traffic is plain HTTP and is often blocked by policy that assumes it is not needed.",
+    "If an inspecting proxy is in the path, confirm its issuing CA is in the local Trusted Root store and that the CDP it stamps is reachable internally.",
+    "Verify the full chain of the certificate involved, not just the leaf - an expired intermediate produces this too.",
+    "Check whether the CRL is simply stale; a CA that has not published a fresh CRL fails every client at once.",
+    "Clear the local CryptoAPI URL cache before re-testing, otherwise a cached failure masks the fix."
+   ],
+   "commands": [
+    "certutil -verify -urlfetch C:\\path\\to\\cert.cer",
+    "certutil -urlcache * delete",
+    "certutil -store -enterprise Root"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=CAPI2%20event%2011%2030%20certificate%20revocation%20check%20failed%20proxy"
+  },
+  {
+   "id": "APP-MSIINSTALLER",
+   "providers": [
+    "MsiInstaller"
+   ],
+   "eventIds": [
+    1013,
+    1023,
+    1033,
+    10005,
+    11707,
+    11708,
+    11728,
+    1042
+   ],
+   "title": "Windows Installer operation failed",
+   "severity": "Warning",
+   "cause": "An MSI transaction failed or rolled back. 11708 is a failed install, 11707 a successful one. Frequent roots: another installation already in progress, a missing or moved source package for a repair, insufficient rights when run in user context, or a custom action failing.",
+   "impact": "The application is absent or half-installed. When triggered by Intune this surfaces as a Win32 app in a failed state and the assignment retries on a loop.",
+   "steps": [
+    "Read the product name and the error code from the message; the MSI error number narrows this immediately.",
+    "If deployed by Intune, check the IME log for the matching attempt and the exit code returned to the service - the Intune tab collects these.",
+    "Reproduce with verbose logging and read the log backwards from the first \"Return value 3\" - that line marks the action that actually failed.",
+    "For a repair or self-heal failure, confirm the original source package is still reachable at the cached source path.",
+    "Confirm the context: an MSI needing machine-wide rights fails when assigned to a user rather than a device.",
+    "Check whether another installation holds the installer mutex, which produces error 1618 and looks intermittent."
+   ],
+   "commands": [
+    "msiexec /i package.msi /l*v C:\\Windows\\Temp\\msi.log /qn",
+    "Select-String -Path C:\\Windows\\Temp\\msi.log -Pattern 'Return value 3' -Context 12,2",
+    "Get-WinEvent -LogName Application -MaxEvents 40 | Where-Object ProviderName -eq 'MsiInstaller' | Format-Table TimeCreated,Id,Message -AutoSize -Wrap"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20Installer%20MsiInstaller%2011708%20verbose%20log%20return%20value%203"
+  },
+  {
+   "id": "SYS-RESOURCE-EXHAUSTION",
+   "providers": [
+    "Resource-Exhaustion-Detector",
+    "Resource-Exhaustion-Resolver"
+   ],
+   "eventIds": [
+    1073,
+    2004,
+    2005,
+    2006
+   ],
+   "title": "System ran out of virtual memory",
+   "severity": "Error",
+   "cause": "Commit charge approached the commit limit. Event 2004 names the processes holding the most memory at the time. Roots are a genuine leak in one process, a page file that is too small or disabled, or simply too little RAM for the workload.",
+   "impact": "Allocations start failing across unrelated processes. Applications crash or hang and the machine becomes unresponsive, which usually gets reported as a hardware fault.",
+   "steps": [
+    "Read the process list in the 2004 event - it names the top consumers at the moment of exhaustion and is the single most useful field.",
+    "Establish whether one process grows steadily over hours or days. That pattern is a leak; restart it as a stopgap and pursue a vendor fix.",
+    "Check the page file configuration. A disabled or small fixed page file causes this on machines with ample RAM.",
+    "Compare committed bytes against the commit limit under normal load to see how much headroom exists.",
+    "If the top consumer is a legitimate workload, the machine is under-specified rather than faulty - size it against actual peak commit.",
+    "Correlate with Application Error 1000 events just after; those are the downstream crashes, not the cause."
+   ],
+   "commands": [
+    "Get-CimInstance Win32_PageFileUsage | Select-Object Name,AllocatedBaseSize,CurrentUsage,PeakUsage",
+    "Get-Process | Sort-Object -Property WorkingSet64 -Descending | Select-Object -First 15 Name,Id,@{n=\"WS(MB)\";e={[int]($_.WorkingSet64/1MB)}}",
+    "Get-Counter '\\Memory\\Committed Bytes','\\Memory\\Commit Limit'"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20event%202004%20Resource%20Exhaustion%20Detector%20virtual%20memory"
+  },
+  {
+   "id": "SYS-CPU-THROTTLE",
+   "providers": [
+    "Kernel-Processor-Power",
+    "Processor-Power"
+   ],
+   "eventIds": [
+    37,
+    38,
+    6,
+    7
+   ],
+   "title": "Processor throttled below nominal frequency",
+   "severity": "Warning",
+   "cause": "Firmware reduced the processor speed below its nominal frequency for an extended period. Usually thermal - blocked vents, failed fan or dried thermal paste - but also caused by an undersized or failing power adapter, or a deliberately restrictive OEM power policy.",
+   "impact": "Severe, sustained slowness that no software change fixes. Frequently misdiagnosed as a Windows or application problem and met with a pointless reimage.",
+   "steps": [
+    "Establish whether throttling correlates with load and with the device being on battery or mains.",
+    "Check for physical causes first: blocked vents, dust, fan noise or its absence, and whether the chassis is hot to the touch.",
+    "Confirm the power adapter is the OEM-rated one. An underpowered third-party adapter throttles the processor under load and is easy to overlook.",
+    "Review the active power plan and any OEM power management utility overriding it.",
+    "Check firmware and chipset driver versions - thermal and power management defects are commonly fixed there.",
+    "If the machine throttles at idle with clean airflow, treat it as a hardware fault and escalate to the vendor."
+   ],
+   "commands": [
+    "powercfg /getactivescheme",
+    "powercfg /energy /duration 60",
+    "Get-CimInstance Win32_Processor | Select-Object Name,MaxClockSpeed,CurrentClockSpeed,LoadPercentage",
+    "Get-CimInstance Win32_Battery | Select-Object Name,BatteryStatus,EstimatedChargeRemaining"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20event%2037%20Kernel-Processor-Power%20throttle%20thermal"
+  },
+  {
+   "id": "SYS-WINLOGON-SLOW",
+   "providers": [
+    "Winlogon"
+   ],
+   "eventIds": [
+    4005,
+    6000,
+    6001,
+    6004,
+    6005,
+    6006
+   ],
+   "title": "Logon notification subscriber was slow or failed",
+   "severity": "Warning",
+   "cause": "A component registered for logon notifications took too long or failed. 6005 and 6006 name the subscriber and the elapsed time. Common culprits are Group Policy client-side extensions waiting on an unreachable share, profile services, and third-party agents that hook logon.",
+   "impact": "Long black or blue screens during sign-in. Each subscriber runs in sequence, so one slow component delays the whole logon.",
+   "steps": [
+    "Read the subscriber name and the elapsed seconds from the event - it identifies the responsible component directly.",
+    "If the subscriber is GPClient, look for Group Policy events at the same time; an unreachable SYSVOL or mapped-drive preference is the usual reason.",
+    "For a third-party agent, check its own log at the same timestamp and confirm the version is current.",
+    "Establish whether the delay only happens off the corporate network - that points at a component waiting on an internal resource until it times out.",
+    "Test with a temporary local profile to separate profile loading from notification subscribers.",
+    "Enable verbose logon status messages while investigating so the phase is visible to the user reporting it."
+   ],
+   "commands": [
+    "Get-WinEvent -LogName 'Microsoft-Windows-Winlogon/Operational' -MaxEvents 40 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap",
+    "Get-WinEvent -LogName 'Microsoft-Windows-GroupPolicy/Operational' -MaxEvents 60 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap",
+    "gpresult /scope:computer /r"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/services-troubleshooting"
+  },
+  {
+   "id": "NET-SMB-CLIENT",
+   "providers": [
+    "SMBClient",
+    "SmbClient",
+    "LanmanWorkstation"
+   ],
+   "eventIds": [
+    30800,
+    30803,
+    30804,
+    30805,
+    30806,
+    31010,
+    1016
+   ],
+   "title": "SMB client connection to a file share failed or degraded",
+   "severity": "Warning",
+   "cause": "The SMB client lost or could not establish a session. Causes range from network interruption, to SMB1 being disabled while the target only speaks SMB1, to signing or encryption mismatches, to the server refusing the session. On managed fleets, guest fallback being blocked is a frequent trigger against NAS devices.",
+   "impact": "Mapped drives disconnect, Office files fail to save, and folder redirection breaks - typically reported as files disappearing.",
+   "steps": [
+    "Read the server name and the status code from the event; the status code separates a network problem from a negotiation refusal.",
+    "Check whether the target only supports SMB1. Modern Windows disables the SMB1 client, and older NAS appliances fail exactly this way.",
+    "If the target needs unauthenticated guest access, note that insecure guest logons are blocked by default - that is a policy decision, not a fault.",
+    "Confirm signing and encryption requirements match at both ends; a mismatch refuses the session cleanly.",
+    "Test the underlying path on TCP 445 with a Port Check card before pursuing SMB-level causes.",
+    "For intermittent drops, correlate with WLAN or VPN events - the SMB error is often just the first casualty of a link drop."
+   ],
+   "commands": [
+    "Get-SmbConnection | Format-Table ServerName,ShareName,Dialect,Encrypted -AutoSize",
+    "Get-SmbClientConfiguration | Select-Object RequireSecuritySignature,EnableInsecureGuestLogons",
+    "Test-NetConnection -ComputerName <server> -Port 445"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=SMB%20client%20event%2030803%2030805%20troubleshooting%20dialect%20guest"
+  },
+  {
+   "id": "SYS-BITS",
+   "providers": [
+    "Bits-Client",
+    "BITS"
+   ],
+   "eventIds": [
+    3,
+    4,
+    5,
+    16392,
+    16393,
+    59,
+    60,
+    203
+   ],
+   "title": "Background Intelligent Transfer Service job failed",
+   "severity": "Warning",
+   "cause": "A BITS transfer failed. Because Windows Update, Intune Win32 app delivery and Configuration Manager all move content over BITS, the usual roots are proxy authentication, a blocked content endpoint, disk space, or a corrupted BITS queue.",
+   "impact": "Updates and application deployments stall without an obvious error. The device reports itself as compliant-but-pending indefinitely.",
+   "steps": [
+    "Read the job owner and error code - the owner tells you which subsystem was transferring, which is usually the fastest clue.",
+    "Check the proxy configuration for the account running the transfer. BITS jobs owned by SYSTEM do not use a per-user proxy, which is a very common cause of SYSTEM-only failures.",
+    "Confirm the content endpoints are reachable on 443 and are excluded from TLS inspection where required.",
+    "Check free disk space on the system drive; BITS fails quietly when the staging location is full.",
+    "List the current BITS queue for stuck jobs and clear them if they are stale.",
+    "If the queue itself is corrupt, reset it and let the owning service recreate the jobs."
+   ],
+   "commands": [
+    "Get-BitsTransfer -AllUsers | Format-Table DisplayName,JobState,BytesTransferred,BytesTotal,OwnerAccount -AutoSize",
+    "netsh winhttp show proxy",
+    "Get-BitsTransfer -AllUsers | Where-Object JobState -eq \"Error\" | Format-List *"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=BITS%20troubleshooting%20job%20error%20proxy%20WinHTTP%20Intune%20content"
+  },
+  {
+   "id": "SYS-ACTIVATION-SPP",
+   "providers": [
+    "Security-SPP",
+    "Software Protection Platform",
+    "SPPSvc"
+   ],
+   "eventIds": [
+    8198,
+    8200,
+    1014,
+    1058,
+    16384,
+    16394,
+    8208
+   ],
+   "title": "Windows activation or licence check failed",
+   "severity": "Warning",
+   "cause": "The Software Protection Platform could not validate the licence. On managed fleets this is normally a network or configuration problem rather than a licensing one: a blocked activation endpoint, a KMS host that cannot be resolved, a wrong or missing subscription entitlement, or Entra-based subscription activation failing because the user lacks the right licence.",
+   "impact": "The device shows activation warnings and, for subscription activation, can drop from Enterprise to Pro edition - which silently disables the Enterprise-only features other policies depend on.",
+   "steps": [
+    "Read the current licensing status and the specific error code before changing anything.",
+    "Establish which activation method the device should use - KMS, MAK, or Entra subscription activation. Diagnosing the wrong one wastes the most time here.",
+    "For subscription activation, verify the signed-in user actually holds the required licence and that the device is correctly joined.",
+    "For KMS, confirm the SRV record resolves and the host is reachable on TCP 1688.",
+    "Confirm the activation endpoints are not blocked or TLS-inspected by the proxy.",
+    "If the edition has downgraded, treat dependent feature failures as symptoms and fix activation first."
+   ],
+   "commands": [
+    "cscript //nologo C:\\Windows\\System32\\slmgr.vbs /dlv",
+    "Get-CimInstance SoftwareLicensingProduct | Where-Object PartialProductKey | Select-Object Name,LicenseStatus,GracePeriodRemaining",
+    "dsregcmd /status",
+    "nslookup -type=srv _vlmcs._tcp"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20subscription%20activation%20troubleshooting%20Security-SPP%208198"
+  },
+  {
+   "id": "MDM-SIDECAR-REMEDIATION",
+   "providers": [
+    "DeviceManagement-Enterprise-Diagnostics-Provider"
+   ],
+   "eventIds": [
+    1200,
+    1201,
+    1202,
+    1203,
+    1900,
+    1901
+   ],
+   "title": "Intune management extension script or remediation failed",
+   "severity": "Error",
+   "cause": "The Intune Management Extension could not run a platform PowerShell script or a remediation. Typical roots: the script assumes 32-bit or 64-bit PowerShell incorrectly, it needs user context but ran as SYSTEM, an execution policy or signing requirement blocks it, or the detection script exits non-zero for its own reasons.",
+   "impact": "Configuration the script was meant to apply never lands, and the device reports a failed script or remediation state in Intune while otherwise looking healthy.",
+   "steps": [
+    "Check the Intune tab for the matching script or remediation entry - it shows the state, error code and the pre/post detection output, which distinguishes a detection failure from a remediation failure.",
+    "Confirm the intended context. A script needing the user hive fails as SYSTEM, and the reverse fails for machine-wide changes.",
+    "Test the script manually as SYSTEM in 64-bit PowerShell, since the extension does not necessarily run the architecture you assume.",
+    "Verify the exit code contract: a detection script must exit 0 for compliant and 1 for non-compliant, and anything else is treated as an error.",
+    "Avoid interactive elements entirely - a prompt or a Read-Host hangs the script until it is killed.",
+    "Read the IME log around the same timestamp; the IME log findings on the Intune tab collect the relevant lines."
+   ],
+   "commands": [
+    "Get-ChildItem 'C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs' | Sort-Object LastWriteTime -Descending | Select-Object -First 5 Name,LastWriteTime",
+    "Select-String -Path 'C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs\\IntuneManagementExtension.log' -Pattern 'Powershell script|Remediation|exit code' | Select-Object -Last 40",
+    "Get-Service IntuneManagementExtension | Format-List Name,Status,StartType"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/client-management/mdm/configuration-service-provider-reference"
+  },
+  {
+   "id": "SYS-SERVICING",
+   "providers": [
+    "Servicing",
+    "CBS",
+    "WUSA",
+    "Setup"
+   ],
+   "eventIds": [],
+   "title": "Servicing / component store event",
+   "severity": "Warning",
+   "cause": "Component Based Servicing reported a package installation, removal or failure. 0x800f08xx codes normally indicate component store corruption or missing payload source.",
+   "impact": "Feature and quality updates fail until the component store is repaired.",
+   "steps": [
+    "Read CBS.log around the failure timestamp and find the FIRST error, not the last.",
+    "Run DISM RestoreHealth followed by SFC.",
+    "If DISM cannot find a source, supply an install.wim from matching media with /Source.",
+    "Ensure 15-20 GB free on the system drive for feature updates.",
+    "As a last resort perform an in-place upgrade repair install to rebuild the component store non-destructively."
+   ],
+   "commands": [
+    "DISM /Online /Cleanup-Image /ScanHealth",
+    "DISM /Online /Cleanup-Image /RestoreHealth",
+    "sfc /scannow",
+    "Get-Content C:\\Windows\\Logs\\CBS\\CBS.log -Tail 200"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/installing-updates-features-roles/fix-windows-update-errors"
+  },
+  {
+   "id": "AAD-TOKEN",
+   "providers": [
+    "Windows-AAD"
+   ],
+   "eventIds": [],
+   "title": "Entra ID (Azure AD) token or PRT operation failed",
+   "severity": "Warning",
+   "cause": "The AAD plugin could not acquire or refresh a token. The Primary Refresh Token underpins single sign-on to every Entra-integrated application, so when it is missing or stale, everything that relies on SSO breaks at once. Frequent roots: no line of sight to a domain controller on a hybrid-joined device, an expired device certificate, a TLS-inspecting proxy breaking the login endpoints, Conditional Access requiring compliance the device cannot prove, or clock skew.",
+   "impact": "Repeated authentication prompts in Office, Teams and Edge, Conditional Access denials, and Intune sync failures - usually reported as \"it keeps asking me to sign in\".",
+   "steps": [
+    "Run dsregcmd /status and read the SSO State section first. AzureAdPrt : NO is the single most diagnostic line available, and it tells you whether to pursue the device or the network.",
+    "For a hybrid-joined device, confirm line of sight to a domain controller - the PRT cannot be issued without it.",
+    "Check the device certificate in the local machine store is present and in date.",
+    "Confirm the login and device-registration endpoints are reachable and excluded from TLS inspection. A re-signed certificate on those endpoints breaks token acquisition specifically.",
+    "Check clock skew; token validation fails on drift well before anything else complains.",
+    "Review Conditional Access. A compliance requirement the device cannot currently satisfy produces authentication failures that look like a client fault.",
+    "Correlate with the Intune tab parsed dsregcmd output and MDM channel events at the same timestamp."
+   ],
+   "commands": [
+    "dsregcmd /status",
+    "dsregcmd /status /debug",
+    "Get-WinEvent -LogName 'Microsoft-Windows-AAD/Operational' -MaxEvents 40 | Format-Table TimeCreated,Id,LevelDisplayName,Message -AutoSize -Wrap",
+    "w32tm /query /status"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=dsregcmd%20status%20troubleshoot%20Entra%20joined%20device%20PRT"
+  },
+  {
+   "id": "AAD-DEVICE-REGISTRATION",
+   "providers": [
+    "User Device Registration",
+    "User-Device-Registration",
+    "Workplace Join"
+   ],
+   "eventIds": [],
+   "title": "Device registration with Entra ID failed",
+   "severity": "Error",
+   "cause": "Automatic device registration or Workplace Join could not complete. Roots include a service connection point missing or wrong in Active Directory for hybrid join, the registration endpoints being blocked, the device already having a stale registration, or the user not being permitted to join devices.",
+   "impact": "The device never becomes Entra-joined or hybrid-joined, so Conditional Access, Intune enrolment and single sign-on cannot work. Everything downstream fails until this is fixed.",
+   "steps": [
+    "Run dsregcmd /status and read the Device State block to establish what the device currently thinks it is.",
+    "For hybrid join, verify the service connection point in the configuration partition names the correct tenant.",
+    "Confirm the device object actually exists and is not stale or duplicated - a leftover registration blocks a fresh one.",
+    "Check the join permission: whether users are allowed to join devices, and whether the device limit per user has been reached.",
+    "Verify the registration endpoints are reachable and not TLS-inspected.",
+    "If a previous registration is broken, leave cleanly and re-register rather than layering a second attempt on top."
+   ],
+   "commands": [
+    "dsregcmd /status",
+    "Get-WinEvent -LogName 'Microsoft-Windows-User Device Registration/Admin' -MaxEvents 40 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap",
+    "dsregcmd /leave",
+    "dsregcmd /join /debug"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=troubleshoot%20hybrid%20Azure%20AD%20join%20device%20registration%20service%20connection%20point"
+  },
+  {
+   "id": "SEC-HELLO-BUSINESS",
+   "providers": [
+    "HelloForBusiness"
+   ],
+   "eventIds": [],
+   "title": "Windows Hello for Business provisioning or use failed",
+   "severity": "Warning",
+   "cause": "Hello for Business could not provision a credential or could not use one. Roots include an unmet prerequisite (no PRT, no reachable domain controller for the key registration step), a missing certificate template in a certificate-trust deployment, TPM problems, or the policy simply not being fully configured.",
+   "impact": "Users fall back to passwords. In a passwordless rollout this defeats the whole programme, and it often coincides with increased credential prompts.",
+   "steps": [
+    "Confirm the prerequisites in order: device joined, PRT present, and the enrolment policy actually targeted at this user. dsregcmd /status answers the first two.",
+    "Check the TPM is present, ready and not in a reduced-functionality state - Hello depends on it for key protection.",
+    "Establish whether the deployment is key trust or certificate trust; the failure modes and prerequisites differ substantially and diagnosing the wrong one wastes time.",
+    "For certificate trust, verify the template exists and the user has enrol permission.",
+    "Confirm the user completed the multi-factor step - provisioning stops silently without it.",
+    "Read the Hello for Business operational log around the failure; its messages name the failing provisioning stage directly."
+   ],
+   "commands": [
+    "dsregcmd /status",
+    "Get-Tpm",
+    "certutil -user -key -csp 'Microsoft Passport Key Storage Provider'",
+    "Get-WinEvent -LogName 'Microsoft-Windows-HelloForBusiness/Operational' -MaxEvents 40 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20Hello%20for%20Business%20provisioning%20troubleshooting%20event%20log"
+  },
+  {
+   "id": "MDM-LAPS",
+   "providers": [
+    "Windows-LAPS",
+    "LAPS"
+   ],
+   "eventIds": [],
+   "title": "Windows LAPS policy or password rotation problem",
+   "severity": "Warning",
+   "cause": "Windows Local Administrator Password Solution could not apply its policy or could not back up a rotated password. Roots include a conflict between the legacy LAPS and the modern in-box LAPS, the target directory not being reachable, the managed account not existing, or insufficient rights to write the password back.",
+   "impact": "The local administrator password is not being rotated or is not retrievable. That is a live security exposure and it also blocks break-glass access exactly when it is needed.",
+   "steps": [
+    "Establish which LAPS is active. The legacy MSI product and the in-box Windows LAPS conflict, and running both is a common cause.",
+    "Confirm the configured backup target and that the device can reach it.",
+    "Verify the managed account name in policy actually exists on the device - a typo produces silent non-compliance.",
+    "Check that the last successful rotation timestamp is recent; a stale value with no errors still means rotation has stopped.",
+    "Force a policy refresh and a rotation, then confirm the password is retrievable from the backup target.",
+    "Review the LAPS operational log for the specific policy processing result rather than assuming the cause."
+   ],
+   "commands": [
+    "Get-LapsDiagnostics",
+    "Get-LapsADPassword -Identity $env:COMPUTERNAME -AsPlainText",
+    "Invoke-LapsPolicyProcessing",
+    "Get-WinEvent -LogName 'Microsoft-Windows-LAPS/Operational' -MaxEvents 40 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Windows%20LAPS%20troubleshooting%20event%20log%20policy%20processing"
+  },
+  {
+   "id": "SEC-DEFENDER-ONBOARDING",
+   "providers": [
+    "Windows-SENSE",
+    "SENSE"
+   ],
+   "eventIds": [],
+   "title": "Defender for Endpoint sensor onboarding or connectivity problem",
+   "severity": "Error",
+   "cause": "The Defender for Endpoint sensor could not onboard or could not reach its cloud service. Usual roots: the onboarding package was not applied, the required service endpoints are blocked or TLS-inspected, a proxy that SYSTEM-context traffic does not use, or the sensor conflicting with a third-party endpoint product.",
+   "impact": "The device is unprotected or invisible in the security portal. It reports as onboarded-but-inactive, which is worse than an obvious failure because it looks covered.",
+   "steps": [
+    "Confirm the onboarding state and the sensor service status before anything else.",
+    "Verify the required service endpoints are reachable from SYSTEM context - the sensor does not use a per-user proxy, which is the most common single cause.",
+    "Confirm the sensor endpoints are excluded from TLS inspection; certificate pinning means re-signed traffic is rejected.",
+    "Check for a third-party antivirus still in active mode, which puts Defender into passive mode and changes what the sensor reports.",
+    "Look for the onboarding registry state and confirm the package that was applied matches the intended tenant.",
+    "Run the vendor connectivity analyser rather than inferring reachability from ping - these endpoints drop ICMP."
+   ],
+   "commands": [
+    "Get-Service Sense,WinDefend | Format-Table Name,Status,StartType -AutoSize",
+    "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows Advanced Threat Protection\\Status' | Select-Object OnboardingState,OrgId",
+    "Get-MpComputerStatus | Select-Object AMRunningMode,AMServiceEnabled,RealTimeProtectionEnabled",
+    "netsh winhttp show proxy"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Defender%20for%20Endpoint%20onboarding%20troubleshooting%20SENSE%20connectivity"
+  },
+  {
+   "id": "MDM-WNS-CHANNEL",
+   "providers": [
+    "WNS",
+    "WindowsPushNotification"
+   ],
+   "eventIds": [],
+   "title": "Windows Push Notification channel could not be established",
+   "severity": "Warning",
+   "cause": "The WNS client could not maintain its channel. Intune uses this channel to tell a device to check in immediately, so when it is broken the device still syncs on its schedule but never responds promptly. Roots are blocked WNS endpoints, a proxy that does not permit the long-lived connection, or the notification platform being disabled by policy.",
+   "impact": "Configuration changes and remote actions take hours instead of seconds. Frequently misread as Intune being slow or a policy not applying at all.",
+   "steps": [
+    "Confirm the WNS endpoints are reachable and permitted through the proxy, including the persistent connection they require.",
+    "Check whether push notifications have been disabled by policy - that produces this cleanly and is a configuration decision, not a fault.",
+    "Verify the device syncs successfully on its scheduled task even while push is broken; that separates a channel problem from an enrolment problem.",
+    "Test a manual sync and confirm it works, which narrows the fault to notification delivery.",
+    "Review proxy logs for dropped long-lived connections to the notification service."
+   ],
+   "commands": [
+    "Get-ScheduledTask -TaskPath '\\Microsoft\\Windows\\EnterpriseMgmt\\*' | Get-ScheduledTaskInfo | Format-Table TaskName,LastRunTime,LastTaskResult -AutoSize",
+    "Get-WinEvent -LogName 'Microsoft-Windows-WNS/Debug' -MaxEvents 30 -ErrorAction SilentlyContinue | Format-Table TimeCreated,Id,Message -AutoSize -Wrap",
+    "netsh winhttp show proxy"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/client-management/mdm/configuration-service-provider-reference"
+  },
+  {
+   "id": "SYS-DELIVERY-OPTIMIZATION",
+   "providers": [
+    "DeliveryOptimization",
+    "DoSvc"
+   ],
+   "eventIds": [],
+   "title": "Delivery Optimization could not download content",
+   "severity": "Warning",
+   "cause": "Delivery Optimization failed to retrieve content from peers or from the cloud service. Roots include the DO endpoints being blocked, peer traffic being filtered between VLANs, an over-restrictive download mode for the site topology, or insufficient cache disk space.",
+   "impact": "Update and application downloads fall back to a slower path or stall. On constrained links this shows up as deployments that never finish rather than an outright error.",
+   "steps": [
+    "Check the current download mode against the site topology. A peering mode that cannot work on a routed network wastes bandwidth and time.",
+    "Confirm the DO service endpoints are reachable; without them the peering metadata cannot be retrieved even when peers exist.",
+    "Verify peer traffic is permitted on the required ports between clients on the same subnet.",
+    "Check the cache drive has enough free space and that the configured cache size is realistic.",
+    "Review the DO performance statistics to see where content actually came from, rather than assuming peering worked.",
+    "On a small or heavily segmented site, consider whether peering is worth enabling at all."
+   ],
+   "commands": [
+    "Get-DeliveryOptimizationStatus | Format-Table FileId,FileSize,BytesFromPeers,BytesFromHttp,DownloadMode -AutoSize",
+    "Get-DeliveryOptimizationPerfSnap",
+    "Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization' -ErrorAction SilentlyContinue"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/search/?terms=Delivery%20Optimization%20troubleshooting%20download%20mode%20peering%20endpoints"
+  },
+  {
+   "id": "MDM-AUTOPILOT-ESP",
+   "providers": [
+    "Provisioning-Diagnostics-Provider",
+    "ModernDeployment-Diagnostics-Provider"
+   ],
+   "eventIds": [],
+   "title": "Autopilot provisioning or Enrollment Status Page failure",
+   "severity": "Error",
+   "cause": "Device provisioning failed during Autopilot or the Enrollment Status Page timed out. Usual roots: a blocking application that cannot install in the time allowed, a required policy that never arrives, network restrictions during the out-of-box phase, or the hardware hash not being registered in the intended profile.",
+   "impact": "The device cannot be handed to a user. This blocks deployment entirely and is the most visible failure mode in the whole enrolment path.",
+   "steps": [
+    "Collect the Autopilot diagnostics first - they name the failing phase, which is the single fastest way to narrow this.",
+    "Establish whether the failure is a blocking application timing out or a policy that never arrived. The remedies are unrelated.",
+    "Confirm the device is assigned to the intended Autopilot profile and that the profile actually downloaded.",
+    "Check the required endpoints are reachable from the provisioning network, which is often more restricted than the corporate network.",
+    "Review the ESP timeout against the realistic install time of the blocking applications; an aggressive timeout produces avoidable failures.",
+    "Reduce the set of blocking applications to the genuine minimum and let the rest install after sign-in."
+   ],
+   "commands": [
+    "Get-WindowsAutopilotInfo -Online",
+    "MdmDiagnosticsTool.exe -area Autopilot;TPM -cab C:\\Temp\\autopilot.cab",
+    "Get-WinEvent -LogName 'Microsoft-Windows-Provisioning-Diagnostics-Provider/Admin' -MaxEvents 40 | Format-Table TimeCreated,Id,Message -AutoSize -Wrap"
+   ],
+   "docs": "https://learn.microsoft.com/en-us/windows/client-management/mdm/configuration-service-provider-reference"
+  }
+ ],
+ "textRules": [
+  {
+   "id": "IME-DETECTION-FAIL",
+   "match": "(?i)detection rule|not applicable|Detected app status",
+   "title": "Win32 app detection rule did not match",
+   "steps": [
+    "Compare the detection rule with what actually exists after install.",
+    "Watch for 32-bit versus 64-bit path and registry redirection.",
+    "Test the detection script manually in 64-bit PowerShell as SYSTEM using PsExec."
+   ]
+  },
+  {
+   "id": "IME-EXITCODE",
+   "match": "(?i)exit code|ExitCode",
+   "title": "Win32 app installer returned a non-zero exit code",
+   "steps": [
+    "Map the exit code to the vendor's documented return codes; 3010 means success-with-reboot.",
+    "Add the code to the app's Return codes list in Intune if it represents success.",
+    "Run the exact install command line manually as SYSTEM to reproduce."
+   ]
+  },
+  {
+   "id": "IME-SIGNATURE",
+   "match": "(?i)is not digitally signed",
+   "title": "PowerShell script blocked by signature enforcement",
+   "steps": [
+    "Sign the script with a trusted code-signing certificate or set 'Enforce script signature check' to No.",
+    "Confirm the signing certificate chain is trusted in LocalMachine\\Root and \\TrustedPublisher."
+   ]
+  },
+  {
+   "id": "IME-CONTEXT-MISMATCH",
+   "match": "(?i)user context|system context|running as|impersonat",
+   "title": "Script or app ran in the wrong context (user vs SYSTEM)",
+   "steps": [
+    "Confirm whether the payload needs the user hive or machine-wide rights.",
+    "A script assigned in user context cannot write HKLM; the reverse cannot see HKCU.",
+    "Test as SYSTEM with PsExec to reproduce the context the extension actually uses."
+   ]
+  },
+  {
+   "id": "IME-PROXY-AUTH",
+   "match": "(?i)407|proxy authentication|winhttp|unable to connect to the remote server",
+   "title": "Content download blocked by proxy or endpoint filtering",
+   "steps": [
+    "SYSTEM-context traffic does not use a per-user proxy - check the WinHTTP proxy separately.",
+    "Confirm the content endpoints are reachable on 443 and excluded from TLS inspection.",
+    "Test with a Port Check card on 443 rather than ping; these endpoints drop ICMP."
+   ]
+  },
+  {
+   "id": "IME-DISK-SPACE",
+   "match": "(?i)not enough space|disk full|0x80070070|insufficient disk",
+   "title": "Not enough disk space to stage or install content",
+   "steps": [
+    "Check free space on the system drive and on the IME staging location.",
+    "Large Win32 apps need room for both the download and the expanded payload.",
+    "Clear the staging cache only after confirming no transfer is in progress."
+   ]
+  },
+  {
+   "id": "IME-REBOOT-PENDING",
+   "match": "(?i)reboot required|pending reboot|1641|3010",
+   "title": "Install completed but requires a restart",
+   "steps": [
+    "Exit codes 1641 and 3010 are success-with-reboot, not failure - map them accordingly.",
+    "A pending reboot blocks subsequent installs; sequence restart-requiring apps deliberately.",
+    "Confirm the app configuration declares these codes as soft-reboot rather than error."
+   ]
+  },
+  {
+   "id": "IME-DEPENDENCY",
+   "match": "(?i)dependency|supersedence|not all dependencies|prerequisite",
+   "title": "Dependency or supersedence chain did not complete",
+   "steps": [
+    "Check every dependency reached a success state before this app was attempted.",
+    "A failed dependency leaves the child app permanently pending rather than failed.",
+    "Review supersedence order - superseded apps uninstall before the replacement installs."
+   ]
+  },
+  {
+   "id": "IME-SIGNING",
+   "match": "(?i)execution policy|not digitally signed|UnauthorizedAccess|cannot be loaded",
+   "title": "Script blocked by execution policy or signing requirement",
+   "steps": [
+    "Check the effective execution policy for the machine and for the SYSTEM context.",
+    "A signing requirement set by policy blocks unsigned scripts regardless of assignment.",
+    "Sign the script rather than weakening the policy for the whole fleet."
+   ]
+  },
+  {
+   "id": "IME-TIMEOUT",
+   "match": "(?i)timed out|timeout|exceeded the allowed time",
+   "title": "Install or script exceeded its allowed run time",
+   "steps": [
+    "Compare actual install duration against the configured timeout.",
+    "An interactive prompt hangs the process until it is killed - remove all interactivity.",
+    "For long installers, raise the timeout rather than retrying into the same limit."
+   ]
+  },
+  {
+   "id": "IME-HASH-MISMATCH",
+   "match": "(?i)hash mismatch|content hash|integrity check failed|0x80091007",
+   "title": "Downloaded content failed its integrity check",
+   "steps": [
+    "A hash mismatch usually means an inspecting proxy or cache altered the payload in transit.",
+    "Exclude the content endpoints from TLS inspection and from any caching appliance.",
+    "Clear the staged content so the next attempt downloads afresh."
+   ]
+  },
+  {
+   "id": "IME-MSI-INPROGRESS",
+   "match": "(?i)1618|another installation|installation already in progress",
+   "title": "Another Windows Installer transaction is already running",
+   "steps": [
+    "Exit code 1618 is transient - the installer mutex was held by another transaction.",
+    "Check whether Windows Update or another deployment ran at the same time.",
+    "Stagger assignments rather than treating this as an application fault."
+   ]
+  }
+ ]
+}
