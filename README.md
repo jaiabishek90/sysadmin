@@ -2,6 +2,7 @@
 
 A self-contained WPF desktop app (Windows PowerShell 5.1 + XAML, **zero external modules**) that reads Windows event logs, **explains what each error means and how to fix it**, and adds Network, Certificate, Intune/MDM and Group Policy analysis — with native charts, severity colour coding, and a **fully resizable, responsive layout**.
 
+![alt text](https://github.com/jaiabishek90/sysadmin/blob/main/images/dashboard.png)
 ---
 
 ## 1. Files
@@ -56,6 +57,8 @@ which is the check that would have caught this before it shipped.
 
 ### Registry reads now enumerate instead of guessing
 
+![alt text](https://github.com/jaiabishek90/sysadmin/blob/main/images/events.png)
+
 Win32 app State, Error, Targeting and Complete were all blank while Scope and
 App ID populated — the giveaway that every *registry-sourced* column failed
 while every *key-name-sourced* column worked. A named read (`Get-ItemProperty
@@ -79,12 +82,7 @@ Both are now labelled rather than printed raw.
 
 ### Sync health claimed "Healthy" with no evidence
 
-The screenshot showed *Last confirmed session:* empty, an empty session grid,
-and *Verdict: Healthy* — scored from the scheduled task's `LastRunTime`. That is
-precisely the misreading this collector was written to prevent, and v4.5 fell
-for it in the fallback path. No session evidence now yields **"Unknown — task
-ran, no session confirmed"** with a note explaining that a task firing is not
-proof a session completed.
+![alt text](https://github.com/jaiabishek90/sysadmin/blob/main/images/systemhealth.png)
 
 The session query also no longer pre-filters on event IDs 208/209/201/202. Asking
 for IDs that may not be emitted and getting nothing proves only that those IDs
@@ -103,6 +101,8 @@ is pure ASCII, so the BOM bought nothing.
 ## 4. What changed in v4.5
 
 ### Intune / MDM rebuilt around why it is broken, not what is configured
+
+![alt text](https://github.com/jaiabishek90/sysadmin/blob/main/images/Intune.png)
 
 `Get-DxIntuneState` already answered *what is configured* — enrolment, certs,
 Win32 apps, scripts, tasks — and it stays untouched. The new
@@ -211,6 +211,8 @@ one. Firewall is currently omitted from the strip for exactly this reason.
 ## 6. What changed in v4.3
 
 ### Navigation moved to a floating left sidebar
+
+![alt text](https://github.com/jaiabishek90/sysadmin/blob/main/images/actions.png)
 
 Done by **re-templating the main `TabControl`**, not by restructuring the window
 grid. The header, global toolbar, console rail and status bar are untouched; the
